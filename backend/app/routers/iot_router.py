@@ -63,7 +63,7 @@ def register_device(
     "/devices/{serial_number}/readings", 
     response_model=SensorReadingResponse,
     summary="Прийом телеметрії",
-    description="Створює окремий алерт для КОЖНОГО типу ліків, умови зберігання яких порушено."
+    description="Аналізує Температуру ТА Вологість."
 )
 def receive_metrics(
     serial_number: str, 
@@ -90,44 +90,43 @@ def receive_metrics(
         ).all()
 
         batches_here = db.query(Batch).filter(Batch.storage_location_id == device.storage_location_id).all()
-        
         unique_medicines = {batch.medicine for batch in batches_here}
 
         for medicine in unique_medicines:
-            min_t = medicine.min_temperature
-            max_t = medicine.max_temperature
+            min_t, max_t = medicine.min_temperature, medicine.max_temperature
+            min_h, max_h = medicine.min_humidity, medicine.max_humidity
             
             existing_med_alert = next((a for a in active_alerts if medicine.name in a.message), None)
 
-            # --- ЛОГІКА ПЕРЕВІРКИ ---
+            violation_reasons = []
             
             if reading.temperature > max_t or reading.temperature < min_t:
+                violation_reasons.append(f"Temp {reading.temperature}°C (Limit: {min_t}-{max_t})")
+            
+            if reading.humidity > max_h or reading.humidity < min_h:
+                violation_reasons.append(f"Humidity {reading.humidity}% (Limit: {min_h}-{max_h})")
+
+            # --- ЛОГІКА АЛЕРТІВ ---
+            
+            if violation_reasons:
+                msg_text = f"Critical: {medicine.name} -> " + ", ".join(violation_reasons)
+                
                 if not existing_med_alert:
-                    alert_msg = f"Critical: {medicine.name} needs {min_t}-{max_t}°C, but current is {reading.temperature}°C"
                     new_alert = Alert(
                         device_id=device.id,
                         severity="critical",
-                        message=alert_msg,
+                        message=msg_text,
                         is_resolved=False
                     )
                     db.add(new_alert)
-                    print(f"[AUTO] Alert Created for {medicine.name}")
+                    print(f"[AUTO] Alert Created: {msg_text}")
             
             else:
                 if existing_med_alert:
                     existing_med_alert.is_resolved = True
                     existing_med_alert.resolved_at = datetime.utcnow()
-                    
-                    log_action(
-                        db,
-                        user_id=None,
-                        action="ALERT_AUTO_RESOLVED",
-                        details={
-                            "alert_id": existing_med_alert.id,
-                            "medicine": medicine.name,
-                            "reason": "Temperature normalized"
-                        }
-                    )
+                    log_action(db, user_id=None, action="ALERT_AUTO_RESOLVED", 
+                               details={"medicine": medicine.name, "reason": "Conditions normalized"})
                     print(f"[AUTO] Alert Resolved for {medicine.name}")
 
     db.commit()

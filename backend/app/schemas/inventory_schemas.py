@@ -2,14 +2,22 @@ from pydantic import BaseModel
 from datetime import date, datetime
 
 # --- Ліки (Номенклатура) ---
+    
 class MedicineBase(BaseModel):
     name: str
     manufacturer: str | None = None
     description: str | None = None
+    
     min_temperature: float
     max_temperature: float
+    
+    min_humidity: float = 0.0
+    max_humidity: float = 65.0
+    
     is_prescription: bool = False
     requires_smart_lock: bool = False
+
+  
 
 class MedicineCreate(MedicineBase):
     pass

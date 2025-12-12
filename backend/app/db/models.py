@@ -58,8 +58,15 @@ class Medicine(Base):
     name = Column(String, nullable=False)
     manufacturer = Column(String)
     description = Column(Text)
-    min_temperature = Column(Float, nullable=False) # IoT поріг
-    max_temperature = Column(Float, nullable=False) # IoT поріг
+    
+    # Температура (було)
+    min_temperature = Column(Float, nullable=False)
+    max_temperature = Column(Float, nullable=False)
+    
+    # Вологість (ДОДАЄМО)
+    min_humidity = Column(Float, default=0.0)
+    max_humidity = Column(Float, default=65.0)
+
     is_prescription = Column(Boolean, default=False)
     requires_smart_lock = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
