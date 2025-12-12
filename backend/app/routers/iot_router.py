@@ -59,15 +59,11 @@ def register_device(
 
 
 
-# ПРИЙОМ ДАНИХ (Для IoT клієнта)
 @router.post(
     "/devices/{serial_number}/readings", 
     response_model=SensorReadingResponse,
     summary="Прийом телеметрії",
-    description="Цей метод викликає сам пристрій. Авторизація користувача не потрібна.",
-    responses={
-        404: {"description": "Пристрій з таким серійним номером не знайдено"}
-    }
+    description="Автоматично створює тривоги при порушенні і ЗАКРИВАЄ їх при нормалізації."
 )
 def receive_metrics(
     serial_number: str, 
@@ -86,35 +82,54 @@ def receive_metrics(
     )
     db.add(db_reading)
     
-    # ЛОГІКА АЛЕРТІВ (Перевірка температури)
-    # Перевіряємо тільки якщо датчик встановлено в локацію
     if device.storage_location_id:
-        # Знаходимо, які ліки лежать там, де стоїть цей датчик
+        existing_alert = db.query(Alert).filter(
+            Alert.device_id == device.id, 
+            Alert.is_resolved == False
+        ).first()
+
         batches_here = db.query(Batch).filter(Batch.storage_location_id == device.storage_location_id).all()
         
+        is_critical_state = False
+        violation_msg = ""
+
         for batch in batches_here:
-            # Перевіряємо умови зберігання для кожного препарату
             min_t = batch.medicine.min_temperature
             max_t = batch.medicine.max_temperature
             
             if reading.temperature > max_t or reading.temperature < min_t:
-                # Створюємо алерт
-                alert_msg = f"Critical: {batch.medicine.name} needs {min_t}-{max_t}°C, but current is {reading.temperature}°C"
-                
-                # Перевіряємо, чи немає вже активного алерту по цьому девайсу
-                existing_alert = db.query(Alert).filter(
-                    Alert.device_id == device.id, 
-                    Alert.is_resolved == False
-                ).first()
+                is_critical_state = True
+                violation_msg = f"Critical: {batch.medicine.name} needs {min_t}-{max_t}°C, but current is {reading.temperature}°C"
+                break
 
-                if not existing_alert:
-                    new_alert = Alert(
-                        device_id=device.id,
-                        severity="critical",
-                        message=alert_msg
-                    )
-                    db.add(new_alert)
-                    # Відправка SMS EMAIL TO-DO
+        # --- ЛОГІКА РІШЕНЬ ---
+        
+        if is_critical_state:
+            if not existing_alert:
+                new_alert = Alert(
+                    device_id=device.id,
+                    severity="critical",
+                    message=violation_msg
+                )
+                db.add(new_alert)
+                print(f"[AUTO] Alert Created for {device.serial_number}")
+        
+        else:
+            if existing_alert:
+                existing_alert.is_resolved = True
+                existing_alert.resolved_at = datetime.utcnow()
+                
+                log_action(
+                    db,
+                    user_id=None, 
+                    action="ALERT_AUTO_RESOLVED",
+                    details={
+                        "alert_id": existing_alert.id,
+                        "reason": f"Temperature normalized to {reading.temperature}°C",
+                        "device": device.serial_number
+                    }
+                )
+                print(f"[AUTO] Alert Resolved for {device.serial_number}")
 
     db.commit()
     db.refresh(db_reading)
