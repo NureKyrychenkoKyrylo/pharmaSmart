@@ -63,7 +63,7 @@ def register_device(
     "/devices/{serial_number}/readings", 
     response_model=SensorReadingResponse,
     summary="Прийом телеметрії",
-    description="Автоматично створює тривоги при порушенні і ЗАКРИВАЄ їх при нормалізації."
+    description="Створює окремий алерт для КОЖНОГО типу ліків, умови зберігання яких порушено."
 )
 def receive_metrics(
     serial_number: str, 
@@ -83,53 +83,52 @@ def receive_metrics(
     db.add(db_reading)
     
     if device.storage_location_id:
-        existing_alert = db.query(Alert).filter(
+        
+        active_alerts = db.query(Alert).filter(
             Alert.device_id == device.id, 
             Alert.is_resolved == False
-        ).first()
+        ).all()
 
         batches_here = db.query(Batch).filter(Batch.storage_location_id == device.storage_location_id).all()
         
-        is_critical_state = False
-        violation_msg = ""
+        unique_medicines = {batch.medicine for batch in batches_here}
 
-        for batch in batches_here:
-            min_t = batch.medicine.min_temperature
-            max_t = batch.medicine.max_temperature
+        for medicine in unique_medicines:
+            min_t = medicine.min_temperature
+            max_t = medicine.max_temperature
+            
+            existing_med_alert = next((a for a in active_alerts if medicine.name in a.message), None)
+
+            # --- ЛОГІКА ПЕРЕВІРКИ ---
             
             if reading.temperature > max_t or reading.temperature < min_t:
-                is_critical_state = True
-                violation_msg = f"Critical: {batch.medicine.name} needs {min_t}-{max_t}°C, but current is {reading.temperature}°C"
-                break
-
-        # --- ЛОГІКА РІШЕНЬ ---
-        
-        if is_critical_state:
-            if not existing_alert:
-                new_alert = Alert(
-                    device_id=device.id,
-                    severity="critical",
-                    message=violation_msg
-                )
-                db.add(new_alert)
-                print(f"[AUTO] Alert Created for {device.serial_number}")
-        
-        else:
-            if existing_alert:
-                existing_alert.is_resolved = True
-                existing_alert.resolved_at = datetime.utcnow()
-                
-                log_action(
-                    db,
-                    user_id=None, 
-                    action="ALERT_AUTO_RESOLVED",
-                    details={
-                        "alert_id": existing_alert.id,
-                        "reason": f"Temperature normalized to {reading.temperature}°C",
-                        "device": device.serial_number
-                    }
-                )
-                print(f"[AUTO] Alert Resolved for {device.serial_number}")
+                if not existing_med_alert:
+                    alert_msg = f"Critical: {medicine.name} needs {min_t}-{max_t}°C, but current is {reading.temperature}°C"
+                    new_alert = Alert(
+                        device_id=device.id,
+                        severity="critical",
+                        message=alert_msg,
+                        is_resolved=False
+                    )
+                    db.add(new_alert)
+                    print(f"[AUTO] Alert Created for {medicine.name}")
+            
+            else:
+                if existing_med_alert:
+                    existing_med_alert.is_resolved = True
+                    existing_med_alert.resolved_at = datetime.utcnow()
+                    
+                    log_action(
+                        db,
+                        user_id=None,
+                        action="ALERT_AUTO_RESOLVED",
+                        details={
+                            "alert_id": existing_med_alert.id,
+                            "medicine": medicine.name,
+                            "reason": "Temperature normalized"
+                        }
+                    )
+                    print(f"[AUTO] Alert Resolved for {medicine.name}")
 
     db.commit()
     db.refresh(db_reading)
