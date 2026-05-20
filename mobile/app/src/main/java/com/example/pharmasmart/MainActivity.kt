@@ -153,7 +153,6 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
     var selectedHistoryEntryId by rememberSaveable { mutableStateOf<String?>(null) }
     var incidentHistoryOpen by rememberSaveable { mutableStateOf(false) }
     var incidentHistoryFilterPharmacy by rememberSaveable { mutableStateOf<String?>(null) }
-    var escalationInfoOpen by rememberSaveable { mutableStateOf(false) }
     var authToken by rememberSaveable { mutableStateOf<String?>(null) }
     var currentUser by remember { mutableStateOf<UserProfile?>(null) }
     var serverUrl by rememberSaveable { mutableStateOf(DEFAULT_BACKEND_URL) }
@@ -193,7 +192,6 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
         selectedHistoryEntryId = null
         incidentHistoryOpen = false
         incidentHistoryFilterPharmacy = null
-        escalationInfoOpen = false
         currentDestination = AppDestination.Dashboard
         loginError = null
         screenMessage = null
@@ -360,8 +358,7 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                     selectedAlert != null -> AlertDetailsScreen(
                         alert = selectedAlert,
                         userRole = currentUser?.role,
-                        onExplainEscalation = { escalationInfoOpen = true },
-                        onEscalate = if (authToken != null) ({
+                    onEscalate = if (authToken != null) ({
                             val token = authToken ?: return@AlertDetailsScreen
                             isLoading = true
                             scope.launch {
@@ -418,7 +415,6 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                             incidentHistoryOpen = true
                             incidentHistoryFilterPharmacy = null
                         },
-                        onShowEscalationInfo = { escalationInfoOpen = true },
                         modifier = Modifier.fillMaxSize(),
                     )
 
@@ -431,7 +427,6 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                             incidentHistoryOpen = true
                             incidentHistoryFilterPharmacy = null
                         },
-                        onShowEscalationInfo = { escalationInfoOpen = true },
                         modifier = Modifier.fillMaxSize(),
                     )
 
@@ -475,11 +470,6 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
             )
         }
 
-        if (escalationInfoOpen) {
-            EscalationGuideDialog(
-                onDismiss = { escalationInfoOpen = false },
-            )
-        }
     }
 }
 
@@ -727,7 +717,6 @@ private fun DashboardScreen(
     user: UserProfile?,
     onAlertClick: (PharmacyAlert) -> Unit,
     onOpenHistory: () -> Unit,
-    onShowEscalationInfo: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -739,27 +728,30 @@ private fun DashboardScreen(
         item {
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = if (user?.role == UserRole.ADMIN) "Мережа під контролем" else "Оперативна зведенка",
+                text = when (user?.role) {
+                    UserRole.ADMIN -> "Мережа під контролем"
+                    UserRole.MANAGER -> "Стан вашої аптеки"
+                    else -> "Оперативна зведенка"
+                },
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
             )
             Text(
-                text = "Оперативна інформація щодо аптек, датчиків та інцидентів зберігання.",
+                text = when (user?.role) {
+                    UserRole.ADMIN -> "Оперативна інформація щодо аптек, датчиків та інцидентів по всій мережі."
+                    UserRole.MANAGER -> "Коротка зведенка по інцидентах, замовленнях і персоналу вашої аптеки."
+                    else -> "Оперативна інформація щодо інцидентів зберігання."
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         item {
-            MetricsGrid(metrics = metrics)
+            MetricsGrid(metrics = metrics, userRole = user?.role)
         }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(onClick = onOpenHistory, shape = RoundedCornerShape(14.dp)) {
-                    Text("Журнал інцидентів")
-                }
-                OutlinedButton(onClick = onShowEscalationInfo, shape = RoundedCornerShape(14.dp)) {
-                    Text("Логіка ескалації")
-                }
+            OutlinedButton(onClick = onOpenHistory, shape = RoundedCornerShape(14.dp)) {
+                Text(if (user?.role == UserRole.ADMIN) "Журнал по мережі" else "Журнал моєї аптеки")
             }
         }
         if (message != null) {
@@ -792,7 +784,10 @@ private fun DashboardScreen(
 }
 
 @Composable
-private fun MetricsGrid(metrics: DashboardMetrics) {
+private fun MetricsGrid(
+    metrics: DashboardMetrics,
+    userRole: UserRole?,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             MetricCard(
@@ -801,33 +796,53 @@ private fun MetricsGrid(metrics: DashboardMetrics) {
                 modifier = Modifier.weight(1f),
                 accentColor = MaterialTheme.colorScheme.errorContainer,
             )
-            MetricCard(
-                title = "Аптеки",
-                value = "${metrics.onlinePharmacies}/${metrics.totalPharmacies}",
-                modifier = Modifier.weight(1f),
-                accentColor = MaterialTheme.colorScheme.primaryContainer,
-            )
+            if (userRole == UserRole.ADMIN) {
+                MetricCard(
+                    title = "Аптеки",
+                    value = "${metrics.onlinePharmacies}/${metrics.totalPharmacies}",
+                    modifier = Modifier.weight(1f),
+                    accentColor = MaterialTheme.colorScheme.primaryContainer,
+                )
+            } else {
+                MetricCard(
+                    title = "Замовлення",
+                    value = metrics.totalSalesOrders.toString(),
+                    modifier = Modifier.weight(1f),
+                    accentColor = MaterialTheme.colorScheme.secondaryContainer,
+                )
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            MetricCard(
-                title = "Замовлення",
-                value = metrics.totalSalesOrders.toString(),
-                modifier = Modifier.weight(1f),
-                accentColor = MaterialTheme.colorScheme.secondaryContainer,
-            )
             MetricCard(
                 title = "Персонал",
                 value = metrics.totalStaff.toString(),
                 modifier = Modifier.weight(1f),
                 accentColor = MaterialTheme.colorScheme.tertiaryContainer,
             )
+            if (userRole == UserRole.ADMIN) {
+                MetricCard(
+                    title = "Замовлення",
+                    value = metrics.totalSalesOrders.toString(),
+                    modifier = Modifier.weight(1f),
+                    accentColor = MaterialTheme.colorScheme.secondaryContainer,
+                )
+            } else {
+                MetricCard(
+                    title = "Виторг",
+                    value = metrics.revenueToday,
+                    modifier = Modifier.weight(1f),
+                    accentColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                )
+            }
         }
-        MetricCard(
-            title = "Виторг",
-            value = metrics.revenueToday,
-            modifier = Modifier.fillMaxWidth(),
-            accentColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-        )
+        if (userRole == UserRole.ADMIN) {
+            MetricCard(
+                title = "Виторг",
+                value = metrics.revenueToday,
+                modifier = Modifier.fillMaxWidth(),
+                accentColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            )
+        }
     }
 }
 
@@ -869,7 +884,6 @@ private fun AlertsScreen(
     user: UserProfile?,
     onAlertClick: (PharmacyAlert) -> Unit,
     onOpenHistory: () -> Unit,
-    onShowEscalationInfo: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var filter by rememberSaveable { mutableStateOf(AlertFilter.All) }
@@ -898,10 +912,10 @@ private fun AlertsScreen(
             Spacer(modifier = Modifier.height(8.dp))
             SectionTitle(
                 title = "Моніторинг інцидентів",
-                subtitle = if (user?.role == UserRole.PHARMACIST) {
-                    "Інциденти, що стосуються вашої аптеки."
-                } else {
-                    "Список актуальних відхилень температури та вологості в місцях зберігання."
+                subtitle = when (user?.role) {
+                    UserRole.ADMIN -> "Список актуальних відхилень температури та вологості по всій мережі."
+                    UserRole.MANAGER, UserRole.PHARMACIST -> "Інциденти, що стосуються вашої аптеки."
+                    else -> "Список актуальних відхилень у місцях зберігання."
                 },
             )
         }
@@ -917,13 +931,8 @@ private fun AlertsScreen(
             }
         }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(onClick = onOpenHistory, shape = RoundedCornerShape(14.dp)) {
-                    Text("Журнал інцидентів")
-                }
-                OutlinedButton(onClick = onShowEscalationInfo, shape = RoundedCornerShape(14.dp)) {
-                    Text("Коли ескалувати")
-                }
+            OutlinedButton(onClick = onOpenHistory, shape = RoundedCornerShape(14.dp)) {
+                Text(if (user?.role == UserRole.ADMIN) "Журнал по мережі" else "Журнал моєї аптеки")
             }
         }
         item {
@@ -931,7 +940,7 @@ private fun AlertsScreen(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Пошук по аптеці, зоні або причині") },
+                label = { Text(if (user?.role == UserRole.ADMIN) "Пошук по аптеці, зоні або причині" else "Пошук по зоні або причині") },
                 singleLine = true,
             )
         }
@@ -1035,7 +1044,6 @@ private fun AlertCard(
 private fun AlertDetailsScreen(
     alert: PharmacyAlert,
     userRole: UserRole?,
-    onExplainEscalation: () -> Unit,
     onEscalate: (() -> Unit)?,
     onResolve: (() -> Unit)?,
     modifier: Modifier = Modifier,
@@ -1061,8 +1069,10 @@ private fun AlertDetailsScreen(
         }
         item {
             DetailCard(
-                title = "Опис інциденту",
+                title = "Стан інциденту",
                 lines = listOf(
+                    "Рівень: ${alert.severity.label()}",
+                    alert.severity.description(),
                     alert.message,
                     "Час виникнення: ${alert.relativeTimeLabel()}",
                     "Точний час: ${alert.formattedCreatedAt()}",
@@ -1076,25 +1086,11 @@ private fun AlertDetailsScreen(
         }
         item {
             DetailCard(
-                title = "Логіка ескалації",
-                lines = listOf(
-                    "Ескалація потрібна, коли відхилення не зникає після первинної перевірки, повторюється або створює ризик для партій.",
-                    "Після ескалації подія потрапляє в журнал інцидентів і вимагає контролю відповідального працівника.",
-                ),
-            )
-        }
-        item {
-            TextButton(onClick = onExplainEscalation) {
-                Text("Пояснити ескалацію")
-            }
-        }
-        item {
-            DetailCard(
                 title = "Рекомендовані дії",
                 lines = listOf(
-                    "1. Перевірити стан холодильного обладнання.",
+                    "1. Перевірити стан зони зберігання та обладнання.",
                     "2. Оцінити ризик для партій препарату ${alert.affectedMedicine}.",
-                    "3. Зафіксувати результат перевірки в журналі інцидентів.",
+                    "3. Якщо показники не повертаються в норму, ескалювати інцидент відповідальному працівнику.",
                 ),
             )
         }
@@ -1178,15 +1174,15 @@ private fun PharmaciesScreen(
         item {
             Spacer(modifier = Modifier.height(8.dp))
             SectionTitle(
-                title = "Аптечна мережа",
-                subtitle = if (user?.role == UserRole.PHARMACIST) {
-                    "Інформація щодо аптеки, до якої прив'язаний користувач."
-                } else {
-                    "Зведена інформація щодо об'єктів, сенсорів і ризиків по кожній аптеці."
+                title = if (user?.role == UserRole.ADMIN) "Аптечна мережа" else "Моя аптека",
+                subtitle = when (user?.role) {
+                    UserRole.ADMIN -> "Зведена інформація щодо об'єктів, сенсорів і ризиків по кожній аптеці."
+                    UserRole.MANAGER, UserRole.PHARMACIST -> "Поточний стан аптеки, до якої прив'язаний користувач."
+                    else -> "Поточний стан аптеки."
                 },
             )
         }
-        if (user?.role != UserRole.PHARMACIST) {
+        if (user?.role == UserRole.ADMIN) {
             item {
                 OutlinedButton(
                     onClick = { onOpenHistory("") },
@@ -1298,11 +1294,6 @@ private fun PharmacyCard(
                 )
             }
             AdaptiveMetricsRow(metrics = metrics)
-            Text(
-                text = pharmacy.trackingSummary(),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -1427,13 +1418,13 @@ private fun PharmacyDetailsDialog(
                 }
                 item {
                     Text(
-                        text = "Поточний статус: ${pharmacy.healthState().label()}",
+                        text = "Статус: ${pharmacy.healthState().label()}",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
                 item {
                     Text(
-                        text = "Останні показники: ${pharmacy.metricSummary()}",
+                        text = pharmacy.metricSummary(),
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
@@ -1455,7 +1446,11 @@ private fun PharmacyDetailsDialog(
                 } else {
                     items(relatedAlerts.take(3), key = { it.id }) { alert ->
                         TextButton(onClick = { onOpenAlert(alert) }) {
-                            Text(alert.message, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                text = "${alert.severity.label()}: ${alert.relativeTimeLabel()}",
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         }
                     }
                 }
@@ -1602,40 +1597,12 @@ private fun IncidentHistoryDialog(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("${entry.pharmacyName} • ${entry.storageLocation}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(entry.message)
-                Text("Виконавець: ${entry.actorName}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("Час: ${entry.formattedCreatedAt()}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (entry.deviceSerialNumber != null) {
-                    Text("Сенсор: ${entry.deviceSerialNumber}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
             }
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
                 Text("Гаразд")
-            }
-        },
-    )
-}
-
-@Composable
-private fun EscalationGuideDialog(
-    onDismiss: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text("Логіка ескалації", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Попередження з'являється, коли параметри зберігання виходять за допустимі межі.")
-                Text("Ескалація потрібна, якщо відхилення триває, повторюється після перевірки або створює ризик для партій препарату.")
-                Text("Після ескалації інцидент не дублюється новим alert, а фіксується в журналі подій для контролю керівника чи адміністратора.")
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Зрозуміло")
             }
         },
     )
@@ -1819,6 +1786,16 @@ private fun PharmacyHealthState.color(): Color = when (this) {
     PharmacyHealthState.Critical -> MaterialTheme.colorScheme.error
 }
 
+private fun AlertSeverity.label(): String = when (this) {
+    AlertSeverity.CRITICAL -> "Критично"
+    AlertSeverity.WARNING -> "Попередження"
+}
+
+private fun AlertSeverity.description(): String = when (this) {
+    AlertSeverity.CRITICAL -> "Показники суттєво вийшли за допустимі межі або порушено кілька параметрів одночасно."
+    AlertSeverity.WARNING -> "Зафіксовано помірне відхилення. Потрібно перевірити умови зберігання, щоб не допустити погіршення."
+}
+
 private fun PharmacySummary.expiringStatusLabel(): String = when {
     expiringBatches == 0 -> "Списання не очікується"
     expiringBatches < 3 -> "Є партії під наглядом"
@@ -1830,12 +1807,6 @@ private fun PharmacySummary.expiringStatusColor(): Color = when {
     expiringBatches == 0 -> MaterialTheme.colorScheme.primary
     expiringBatches < 3 -> Color(0xFF9C6B00)
     else -> MaterialTheme.colorScheme.error
-}
-
-private fun PharmacySummary.trackingSummary(): String = when (healthState()) {
-    PharmacyHealthState.Stable -> "Поточні показники доступні, активних тривог для цієї аптеки немає."
-    PharmacyHealthState.Watch -> "Для цієї аптеки є активна тривога. Перевірте розділ \"Тривоги\"."
-    PharmacyHealthState.Critical -> "Для цієї аптеки зафіксовано кілька активних тривог. Потрібна швидка реакція."
 }
 
 private fun PharmacySummary.storageStateLabel(): String = when (healthState()) {
@@ -1878,7 +1849,7 @@ private fun IncidentHistoryEntry.relativeTimeLabel(): String = formatRelativeTim
 private fun IncidentHistoryEntry.formattedCreatedAt(): String = formatAbsoluteTime(createdAt)
 
 private fun PharmacySummary.metricSummary(): String {
-    val temperatureText = if (temperature == 0.0) "температура недоступна" else "температура ${temperature}°C"
+    val temperatureText = if (temperature == 0.0) "температура недоступна" else "Температура ${temperature}°C"
     val humidityText = if (humidity == 0) "вологість недоступна" else "вологість ${humidity}%"
-    return "$temperatureText, $humidityText, відкритих інцидентів $activeIncidents"
+    return "$temperatureText, $humidityText. Відкритих інцидентів: $activeIncidents."
 }

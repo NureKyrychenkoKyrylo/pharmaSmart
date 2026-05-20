@@ -15,6 +15,10 @@ DEFAULT_REFRIGERATED_MIN_T = 2.0
 DEFAULT_REFRIGERATED_MAX_T = 8.0
 DEFAULT_MIN_HUMIDITY = 45.0
 DEFAULT_MAX_HUMIDITY = 65.0
+WARNING_TEMPERATURE_DELTA = 2.0
+CRITICAL_TEMPERATURE_DELTA = 5.0
+WARNING_HUMIDITY_DELTA = 5.0
+CRITICAL_HUMIDITY_DELTA = 15.0
 
 
 def build_violation_reasons(
@@ -36,8 +40,42 @@ def build_violation_reasons(
     return violation_reasons
 
 
+def calculate_deviation(value: float, min_value: float, max_value: float) -> float:
+    if value < min_value:
+        return min_value - value
+    if value > max_value:
+        return value - max_value
+    return 0.0
+
+
+def classify_alert_severity(
+    temperature: float,
+    humidity: float,
+    min_t: float,
+    max_t: float,
+    min_h: float,
+    max_h: float,
+) -> str:
+    temp_delta = calculate_deviation(temperature, min_t, max_t)
+    humidity_delta = calculate_deviation(humidity, min_h, max_h)
+    both_violated = temp_delta > 0 and humidity_delta > 0
+
+    if (
+        temp_delta >= CRITICAL_TEMPERATURE_DELTA
+        or humidity_delta >= CRITICAL_HUMIDITY_DELTA
+        or both_violated
+    ):
+        return "critical"
+
+    if temp_delta >= WARNING_TEMPERATURE_DELTA or humidity_delta >= WARNING_HUMIDITY_DELTA:
+        return "warning"
+
+    return "warning"
+
+
 def build_human_alert_message(
     subject: str,
+    severity: str,
     temperature: float,
     humidity: float,
     min_t: float,
@@ -58,10 +96,11 @@ def build_human_alert_message(
             f"вологість {humidity:.0f}% при нормі {min_h:.0f}-{max_h:.0f}%"
         )
 
+    severity_label = "Критичне відхилення" if severity == "critical" else "Попередження"
     prefix = (
-        f"Критичне відхилення в зоні зберігання «{subject}»."
+        f"{severity_label} в зоні зберігання «{subject}»."
         if is_location_level
-        else f"Критичне відхилення для препарату «{subject}»."
+        else f"{severity_label} для препарату «{subject}»."
     )
     details = " та ".join(parts) if parts else "Параметри вийшли за допустимі межі."
     return f"{prefix} Зафіксовано {details}."
@@ -70,6 +109,7 @@ def build_human_alert_message(
 def refresh_active_alert(
     db: Session,
     alert: Alert,
+    severity: str,
     message: str,
     device: IoTDevice,
     subject: str,
@@ -78,7 +118,7 @@ def refresh_active_alert(
 ):
     previous_message = alert.message
     alert.message = message
-    alert.severity = "critical"
+    alert.severity = severity
     alert.resolved_at = None
     alert.is_resolved = False
 
@@ -250,8 +290,17 @@ def receive_metrics(
             )
 
             if violation_reasons:
+                severity = classify_alert_severity(
+                    temperature=reading.temperature,
+                    humidity=reading.humidity,
+                    min_t=min_t,
+                    max_t=max_t,
+                    min_h=min_h,
+                    max_h=max_h,
+                )
                 msg_text = build_human_alert_message(
                     subject=medicine.name,
+                    severity=severity,
                     temperature=reading.temperature,
                     humidity=reading.humidity,
                     min_t=min_t,
@@ -264,6 +313,7 @@ def receive_metrics(
                     refresh_active_alert(
                         db=db,
                         alert=existing_med_alert,
+                        severity=severity,
                         message=msg_text,
                         device=device,
                         subject=medicine.name,
@@ -274,7 +324,7 @@ def receive_metrics(
                 else:
                     new_alert = Alert(
                         device_id=device.id,
-                        severity="critical",
+                        severity=severity,
                         message=msg_text,
                         is_resolved=False
                     )
@@ -314,6 +364,14 @@ def receive_metrics(
 
             generic_message = build_human_alert_message(
                 subject=location.name,
+                severity=classify_alert_severity(
+                    temperature=reading.temperature,
+                    humidity=reading.humidity,
+                    min_t=DEFAULT_REFRIGERATED_MIN_T,
+                    max_t=DEFAULT_REFRIGERATED_MAX_T,
+                    min_h=DEFAULT_MIN_HUMIDITY,
+                    max_h=DEFAULT_MAX_HUMIDITY,
+                ),
                 temperature=reading.temperature,
                 humidity=reading.humidity,
                 min_t=DEFAULT_REFRIGERATED_MIN_T,
@@ -328,10 +386,19 @@ def receive_metrics(
             )
 
             if default_violations:
+                severity = classify_alert_severity(
+                    temperature=reading.temperature,
+                    humidity=reading.humidity,
+                    min_t=DEFAULT_REFRIGERATED_MIN_T,
+                    max_t=DEFAULT_REFRIGERATED_MAX_T,
+                    min_h=DEFAULT_MIN_HUMIDITY,
+                    max_h=DEFAULT_MAX_HUMIDITY,
+                )
                 if existing_generic_alert:
                     refresh_active_alert(
                         db=db,
                         alert=existing_generic_alert,
+                        severity=severity,
                         message=generic_message,
                         device=device,
                         subject=location.name,
@@ -342,7 +409,7 @@ def receive_metrics(
                 else:
                     db.add(Alert(
                         device_id=device.id,
-                        severity="critical",
+                        severity=severity,
                         message=generic_message,
                         is_resolved=False,
                     ))
