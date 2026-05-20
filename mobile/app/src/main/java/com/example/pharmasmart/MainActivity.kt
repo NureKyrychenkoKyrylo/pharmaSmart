@@ -873,12 +873,19 @@ private fun AlertsScreen(
     modifier: Modifier = Modifier,
 ) {
     var filter by rememberSaveable { mutableStateOf(AlertFilter.All) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
     val filteredAlerts = alerts.filter { alert ->
+        val matchesSearch = searchQuery.isBlank() ||
+            alert.message.contains(searchQuery, ignoreCase = true) ||
+            alert.pharmacyName.contains(searchQuery, ignoreCase = true) ||
+            alert.storageLocation.contains(searchQuery, ignoreCase = true) ||
+            alert.affectedMedicine.contains(searchQuery, ignoreCase = true)
+
         when (filter) {
-            AlertFilter.All -> true
-            AlertFilter.Critical -> alert.severity == AlertSeverity.CRITICAL
-            AlertFilter.Warning -> alert.severity == AlertSeverity.WARNING
-        }
+            AlertFilter.All -> matchesSearch
+            AlertFilter.Critical -> alert.severity == AlertSeverity.CRITICAL && matchesSearch
+            AlertFilter.Warning -> alert.severity == AlertSeverity.WARNING && matchesSearch
+        } 
     }
 
     LazyColumn(
@@ -918,6 +925,15 @@ private fun AlertsScreen(
                     Text("Коли ескалувати")
                 }
             }
+        }
+        item {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Пошук по аптеці, зоні або причині") },
+                singleLine = true,
+            )
         }
         if (message != null) {
             item {

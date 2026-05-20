@@ -78,20 +78,28 @@ class BackendPharmaSmartRepository(
     }
 
     suspend fun getIncidentHistory(token: String): List<IncidentHistoryEntry> {
-        return api.getIncidentHistory("Bearer $token").map { dto ->
-            IncidentHistoryEntry(
-                id = dto.id.toString(),
-                action = dto.action,
-                headline = dto.headline,
-                message = dto.message,
-                pharmacyName = dto.pharmacy_name ?: "Невідома аптека",
-                storageLocation = dto.storage_location_name ?: "Невідома локація",
-                deviceSerialNumber = dto.device_serial_number,
-                actorName = dto.actor_name ?: "Система",
-                createdAt = dto.created_at,
-                alertId = dto.alert_id?.toString(),
-            )
-        }
+        return runCatching {
+            api.getIncidentHistory("Bearer $token").map { dto ->
+                IncidentHistoryEntry(
+                    id = dto.id.toString(),
+                    action = dto.action,
+                    headline = dto.headline,
+                    message = dto.message,
+                    pharmacyName = dto.pharmacy_name ?: "Невідома аптека",
+                    storageLocation = dto.storage_location_name ?: "Невідома локація",
+                    deviceSerialNumber = dto.device_serial_number,
+                    actorName = dto.actor_name ?: "Система",
+                    createdAt = dto.created_at,
+                    alertId = dto.alert_id?.toString(),
+                )
+            }
+        }.recoverCatching { error ->
+            if (error is HttpException && error.code() == 404) {
+                emptyList()
+            } else {
+                throw error
+            }
+        }.getOrThrow()
     }
 
     suspend fun getPharmacies(token: String): List<PharmacySummary> {
@@ -113,7 +121,16 @@ class BackendPharmaSmartRepository(
     }
 
     suspend fun escalateAlert(token: String, alertId: String) {
-        api.escalateAlert(alertId.toInt(), "Bearer $token")
+        runCatching {
+            api.escalateAlert(alertId.toInt(), "Bearer $token")
+        }.getOrElse { error ->
+            if (error is HttpException && error.code() == 404) {
+                throw UnsupportedOperationException(
+                    "Поточна версія сервера ще не підтримує ескалацію інцидентів. Потрібен повторний деплой backend."
+                )
+            }
+            throw error
+        }
     }
 
     private fun extractMedicineName(message: String): String {
@@ -136,6 +153,7 @@ class BackendPharmaSmartRepository(
                 else -> "Сервер повернув помилку ${error.code()}."
             }
             is IOException -> "Не вдалося підключитися до backend. Перевірте інтернет або адресу сервера."
+            is UnsupportedOperationException -> error.message ?: "Функція тимчасово недоступна на цьому сервері."
             else -> error.message ?: "Сталася невідома помилка."
         }
     }
