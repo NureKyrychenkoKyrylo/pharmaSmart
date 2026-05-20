@@ -674,6 +674,8 @@ def escalate_alert(
         if not current_user.pharmacy_id or not pharmacy or pharmacy.id != current_user.pharmacy_id:
             raise HTTPException(status_code=403, detail="Not your alert")
 
+    alert.severity = "critical"
+
     log_action(
         db,
         user_id=current_user.id,
@@ -684,6 +686,7 @@ def escalate_alert(
             "device_sn": device.serial_number if device else None,
             "message": alert.message,
             "subject": extract_subject_from_message(alert.message),
+            "severity": alert.severity,
             "pharmacy_name": pharmacy.name if pharmacy else None,
             "storage_location_name": location.name if location else None,
             "escalation_note": "Інцидент ескальовано: потрібна перевірка обладнання, оцінка ризику для партій та контроль повторного вимірювання.",

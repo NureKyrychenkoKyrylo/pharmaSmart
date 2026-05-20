@@ -155,7 +155,6 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
     var incidentHistoryFilterPharmacy by rememberSaveable { mutableStateOf<String?>(null) }
     var authToken by rememberSaveable { mutableStateOf<String?>(null) }
     var currentUser by remember { mutableStateOf<UserProfile?>(null) }
-    var serverUrl by rememberSaveable { mutableStateOf(DEFAULT_BACKEND_URL) }
     var loginError by rememberSaveable { mutableStateOf<String?>(null) }
     var screenMessage by rememberSaveable { mutableStateOf<String?>(null) }
 
@@ -207,25 +206,19 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
     ) {
         if (!isLoggedIn) {
             LoginScreen(
-                serverUrl = serverUrl,
                 isLoading = isLoading,
                 errorMessage = loginError,
-                onServerUrlChange = {
-                    serverUrl = it
-                    loginError = null
-                },
                 onLogin = { email, password ->
                     if (email.isBlank() || password.isBlank()) {
                         loginError = "Вкажіть email і пароль."
                         return@LoginScreen
                     }
 
-                    val normalizedUrl = serverUrl.trim().ifBlank { DEFAULT_BACKEND_URL }
                     isLoading = true
                     loginError = null
 
                     scope.launch {
-                        val repository = BackendPharmaSmartRepository(normalizedUrl)
+                        val repository = BackendPharmaSmartRepository(DEFAULT_BACKEND_URL)
                         runCatching {
                             val token = repository.login(email.trim(), password)
                             val user = repository.getCurrentUser(token)
@@ -252,7 +245,6 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                                 incidentHistory = repository.getIncidentHistory(token),
                             )
                         }.onSuccess { snapshot ->
-                            serverUrl = normalizedUrl
                             applySnapshot(snapshot)
                             currentDestination = if (snapshot.user.role == UserRole.PHARMACIST) {
                                 AppDestination.Alerts
@@ -299,7 +291,7 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                         isLoading = true
                         screenMessage = null
                         scope.launch {
-                            val repository = BackendPharmaSmartRepository(serverUrl)
+                            val repository = BackendPharmaSmartRepository(DEFAULT_BACKEND_URL)
                             runCatching {
                                 val user = currentUser ?: repository.getCurrentUser(token)
                                 RemoteSnapshot(
@@ -358,16 +350,18 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                     selectedAlert != null -> AlertDetailsScreen(
                         alert = selectedAlert,
                         userRole = currentUser?.role,
-                    onEscalate = if (authToken != null) ({
+                        onEscalate = if (authToken != null) ({
                             val token = authToken ?: return@AlertDetailsScreen
                             isLoading = true
                             scope.launch {
-                                val repository = BackendPharmaSmartRepository(serverUrl)
+                                val repository = BackendPharmaSmartRepository(DEFAULT_BACKEND_URL)
                                 runCatching {
                                     repository.escalateAlert(token, selectedAlert.id)
-                                    repository.getIncidentHistory(token)
-                                }.onSuccess { fetchedHistory ->
+                                    Pair(repository.getAlerts(token), repository.getIncidentHistory(token))
+                                }.onSuccess { (fetchedAlerts, fetchedHistory) ->
+                                    alerts = fetchedAlerts
                                     incidentHistory = fetchedHistory
+                                    selectedAlertId = selectedAlert.id
                                     showConfirmation("Інцидент ескальовано й додано до журналу.")
                                 }.onFailure { error ->
                                     screenMessage = repository.toUserMessage(error)
@@ -379,7 +373,7 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                             val token = authToken ?: return@AlertDetailsScreen
                             isLoading = true
                             scope.launch {
-                                val repository = BackendPharmaSmartRepository(serverUrl)
+                                val repository = BackendPharmaSmartRepository(DEFAULT_BACKEND_URL)
                                 runCatching {
                                     repository.resolveAlert(token, selectedAlert.id)
                                     Pair(repository.getAlerts(token), repository.getIncidentHistory(token))
@@ -483,10 +477,8 @@ fun AppPreview() {
 
 @Composable
 private fun LoginScreen(
-    serverUrl: String,
     isLoading: Boolean,
     errorMessage: String?,
-    onServerUrlChange: (String) -> Unit,
     onLogin: (String, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -516,14 +508,6 @@ private fun LoginScreen(
                     text = "Мобільний центр керування аптечною мережею",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(
-                    value = serverUrl,
-                    onValueChange = onServerUrlChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Server URL") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 )
                 OutlinedTextField(
                     value = email,
@@ -571,7 +555,7 @@ private fun LoginScreen(
                     }
                 }
                 Text(
-                    text = "За замовчуванням використовується hosted backend на Render. Для локальної розробки можна вказати свій URL.",
+                    text = "Застосунок підключений до стабільного backend-сервера PharmaSmart.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
