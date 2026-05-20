@@ -35,6 +35,16 @@ def build_violation_reasons(
 
     return violation_reasons
 
+
+def refresh_active_alert(alert: Alert, message: str):
+    alert.message = message
+    alert.severity = "critical"
+    # We reuse created_at as the latest trigger timestamp because the schema
+    # does not yet have a dedicated updated_at/triggered_at field.
+    alert.created_at = datetime.utcnow()
+    alert.resolved_at = None
+    alert.is_resolved = False
+
 # РЕЄСТРАЦІЯ ПРИСТРОЮ (Адміністративна панель)
 @router.post(
     "/devices",
@@ -134,7 +144,10 @@ def receive_metrics(
             if violation_reasons:
                 msg_text = f"Critical: {medicine.name} -> " + ", ".join(violation_reasons)
                 
-                if not existing_med_alert:
+                if existing_med_alert:
+                    refresh_active_alert(existing_med_alert, msg_text)
+                    print(f"[AUTO] Alert Updated: {msg_text}")
+                else:
                     new_alert = Alert(
                         device_id=device.id,
                         severity="critical",
@@ -168,14 +181,18 @@ def receive_metrics(
                 None
             )
 
-            if default_violations and not existing_generic_alert:
-                db.add(Alert(
-                    device_id=device.id,
-                    severity="critical",
-                    message=generic_message,
-                    is_resolved=False,
-                ))
-                print(f"[AUTO] Fallback Alert Created: {generic_message}")
+            if default_violations:
+                if existing_generic_alert:
+                    refresh_active_alert(existing_generic_alert, generic_message)
+                    print(f"[AUTO] Fallback Alert Updated: {generic_message}")
+                else:
+                    db.add(Alert(
+                        device_id=device.id,
+                        severity="critical",
+                        message=generic_message,
+                        is_resolved=False,
+                    ))
+                    print(f"[AUTO] Fallback Alert Created: {generic_message}")
             elif not default_violations and existing_generic_alert:
                 existing_generic_alert.is_resolved = True
                 existing_generic_alert.resolved_at = datetime.utcnow()
