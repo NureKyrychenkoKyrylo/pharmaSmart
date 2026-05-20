@@ -46,3 +46,20 @@ class AlertResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ActiveAlertResponse(BaseModel):
+    id: int
+    device_id: int
+    severity: str
+    message: str
+    is_resolved: bool
+    created_at: datetime
+    pharmacy_name: Optional[str] = None
+    storage_location_name: Optional[str] = None
+    device_serial_number: Optional[str] = None
+    latest_temperature: Optional[float] = None
+    latest_humidity: Optional[float] = None
+
+    class Config:
+        from_attributes = True

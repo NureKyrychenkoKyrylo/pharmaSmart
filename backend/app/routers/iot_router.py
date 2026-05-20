@@ -5,7 +5,7 @@ from datetime import datetime
 
 from app.db.database import get_db
 from app.db.models import IoTDevice, SensorReading, Medicine, Batch, Alert, User, StorageLocation
-from app.schemas.iot_schemas import IoTDeviceCreate, IoTDeviceResponse, SensorReadingCreate, SensorReadingResponse
+from app.schemas.iot_schemas import ActiveAlertResponse, IoTDeviceCreate, IoTDeviceResponse, SensorReadingCreate, SensorReadingResponse
 from app.api.deps import get_current_user, get_current_admin
 from app.services.audit_service import log_action
 
@@ -193,7 +193,7 @@ def read_devices(
     return query.all()
 
 # ОТРИМАННЯ АКТИВНИХ ТРИВОГ
-@router.get("/alerts", summary="Список активних тривог")
+@router.get("/alerts", response_model=List[ActiveAlertResponse], summary="Список активних тривог")
 def get_active_alerts(
     pharmacy_id: Optional[int] = None,
     db: Session = Depends(get_db),
@@ -210,7 +210,43 @@ def get_active_alerts(
             return []
         query = query.filter(StorageLocation.pharmacy_id == current_user.pharmacy_id)
         
-    return query.all()
+    alerts = query.order_by(Alert.created_at.desc()).all()
+
+    result: List[ActiveAlertResponse] = []
+    for alert in alerts:
+        device = db.query(IoTDevice).filter(IoTDevice.id == alert.device_id).first()
+        location = None
+        pharmacy = None
+        latest_reading = None
+
+        if device and device.storage_location_id:
+            location = db.query(StorageLocation).filter(StorageLocation.id == device.storage_location_id).first()
+            if location:
+                pharmacy = db.query(StorageLocation).filter(StorageLocation.id == location.id).first()
+                pharmacy = location.pharmacy
+
+            latest_reading = db.query(SensorReading)\
+                .filter(SensorReading.device_id == device.id)\
+                .order_by(SensorReading.recorded_at.desc())\
+                .first()
+
+        result.append(
+            ActiveAlertResponse(
+                id=alert.id,
+                device_id=alert.device_id,
+                severity=alert.severity,
+                message=alert.message,
+                is_resolved=alert.is_resolved,
+                created_at=alert.created_at,
+                pharmacy_name=pharmacy.name if pharmacy else None,
+                storage_location_name=location.name if location else None,
+                device_serial_number=device.serial_number if device else None,
+                latest_temperature=latest_reading.temperature if latest_reading else None,
+                latest_humidity=latest_reading.humidity if latest_reading else None,
+            )
+        )
+
+    return result
 
 # ВИРІШЕННЯ ТРИВОГИ (Resolve)
 @router.put("/alerts/{alert_id}/resolve", summary="Закрити інцидент")

@@ -9,35 +9,40 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
 private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
+    primary = Jade80,
+    secondary = TealGrey80,
+    tertiary = Sky80,
+    background = DarkSlate,
+    surface = Color(0xFF202927),
+    surfaceContainerLowest = Color(0xFF151D1B),
+    onPrimary = DarkSlate,
+    onSecondary = DarkSlate,
+    onTertiary = DarkSlate,
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
-
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
-    onPrimary = Color.White,
-    onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+    primary = Jade40,
+    secondary = TealGrey40,
+    tertiary = Sky40,
+    background = WarmBackground,
+    surface = WarmSurface,
+    surfaceContainerLowest = Color(0xFFF2F5F4),
+    surfaceContainerHigh = Color(0xFFE7ECE9),
+    primaryContainer = Color(0xFFC4EDDF),
+    secondaryContainer = Color(0xFFD5E8E2),
+    tertiaryContainer = Color(0xFFD8EAF8),
+    error = SoftError,
 )
 
 @Composable
 fun PharmasmartTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {
