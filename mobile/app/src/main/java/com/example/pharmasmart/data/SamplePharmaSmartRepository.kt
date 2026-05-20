@@ -10,7 +10,8 @@ class SamplePharmaSmartRepository {
         activeAlerts = 4,
         onlinePharmacies = 5,
         totalPharmacies = 6,
-        expiringBatches = 11,
+        totalSalesOrders = 128,
+        totalStaff = 23,
         revenueToday = "₴48 250",
     )
 

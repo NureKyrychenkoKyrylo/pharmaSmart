@@ -9,7 +9,8 @@ data class DashboardMetrics(
     val activeAlerts: Int,
     val onlinePharmacies: Int,
     val totalPharmacies: Int,
-    val expiringBatches: Int,
+    val totalSalesOrders: Int,
+    val totalStaff: Int,
     val revenueToday: String,
 )
 

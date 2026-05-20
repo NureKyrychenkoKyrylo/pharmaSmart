@@ -21,9 +21,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -31,7 +33,6 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -50,10 +51,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
 import com.example.pharmasmart.data.BackendPharmaSmartRepository
 import com.example.pharmasmart.data.SamplePharmaSmartRepository
 import com.example.pharmasmart.data.model.AlertSeverity
@@ -62,6 +64,8 @@ import com.example.pharmasmart.data.model.PharmacyAlert
 import com.example.pharmasmart.data.model.PharmacySummary
 import com.example.pharmasmart.ui.theme.PharmasmartTheme
 import kotlinx.coroutines.launch
+
+private const val DEFAULT_BACKEND_URL = "https://pharmasmart-ej5n.onrender.com"
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -87,22 +91,67 @@ private enum class AlertFilter(val label: String) {
     Warning("Попередження"),
 }
 
+private data class RemoteSnapshot(
+    val token: String,
+    val metrics: DashboardMetrics,
+    val alerts: List<PharmacyAlert>,
+    val pharmacies: List<PharmacySummary>,
+)
+
 @Composable
 fun PharmaSmartApp(modifier: Modifier = Modifier) {
     val sampleRepository = remember { SamplePharmaSmartRepository() }
     val scope = rememberCoroutineScope()
+
     var isLoggedIn by rememberSaveable { mutableStateOf(false) }
+    var isLoading by rememberSaveable { mutableStateOf(false) }
     var currentDestination by rememberSaveable { mutableStateOf(AppDestination.Dashboard) }
     var selectedAlertId by rememberSaveable { mutableStateOf<String?>(null) }
     var authToken by rememberSaveable { mutableStateOf<String?>(null) }
-    var serverUrl by rememberSaveable { mutableStateOf("http://192.168.0.100:8000") }
-    var isLoading by rememberSaveable { mutableStateOf(false) }
+    var serverUrl by rememberSaveable { mutableStateOf(DEFAULT_BACKEND_URL) }
     var loginError by rememberSaveable { mutableStateOf<String?>(null) }
+    var screenMessage by rememberSaveable { mutableStateOf<String?>(null) }
+
     var alerts by remember { mutableStateOf(sampleRepository.getAlerts()) }
     var pharmacies by remember { mutableStateOf(sampleRepository.getPharmacies()) }
     var metrics by remember { mutableStateOf(sampleRepository.getDashboardMetrics()) }
 
-    Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+    fun applySnapshot(snapshot: RemoteSnapshot) {
+        val enrichedPharmacies = snapshot.pharmacies.map { pharmacy ->
+            val pharmacyAlerts = snapshot.alerts.filter { it.pharmacyName == pharmacy.name }
+            pharmacy.copy(
+                activeIncidents = pharmacyAlerts.size,
+                temperature = pharmacyAlerts.firstOrNull { it.temperature != 0.0 }?.temperature ?: pharmacy.temperature,
+                humidity = pharmacyAlerts.firstOrNull { it.humidity != 0 }?.humidity ?: pharmacy.humidity,
+            )
+        }
+
+        authToken = snapshot.token
+        alerts = snapshot.alerts
+        pharmacies = enrichedPharmacies
+        metrics = snapshot.metrics.copy(
+            onlinePharmacies = enrichedPharmacies.size,
+            totalPharmacies = enrichedPharmacies.size,
+        )
+    }
+
+    fun logout() {
+        isLoggedIn = false
+        isLoading = false
+        authToken = null
+        selectedAlertId = null
+        currentDestination = AppDestination.Dashboard
+        loginError = null
+        screenMessage = null
+        alerts = sampleRepository.getAlerts()
+        pharmacies = sampleRepository.getPharmacies()
+        metrics = sampleRepository.getDashboardMetrics()
+    }
+
+    Surface(
+        modifier = modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background,
+    ) {
         if (!isLoggedIn) {
             LoginScreen(
                 serverUrl = serverUrl,
@@ -113,29 +162,36 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                     loginError = null
                 },
                 onLogin = { email, password ->
+                    if (email.isBlank() || password.isBlank()) {
+                        loginError = "Вкажіть email і пароль."
+                        return@LoginScreen
+                    }
+
+                    val normalizedUrl = serverUrl.trim().ifBlank { DEFAULT_BACKEND_URL }
                     isLoading = true
                     loginError = null
+
                     scope.launch {
+                        val repository = BackendPharmaSmartRepository(normalizedUrl)
                         runCatching {
-                            val repository = BackendPharmaSmartRepository(serverUrl.trim())
-                            val token = repository.login(email, password)
+                            val token = repository.login(email.trim(), password)
                             val fetchedAlerts = repository.getAlerts(token)
                             val fetchedPharmacies = repository.getPharmacies(token)
-                            val fetchedMetrics = repository.getDashboardMetrics(token).copy(
-                                onlinePharmacies = fetchedPharmacies.size,
-                                totalPharmacies = fetchedPharmacies.size,
+                            val fetchedMetrics = repository.getDashboardMetrics(token)
+                            RemoteSnapshot(
+                                token = token,
+                                metrics = fetchedMetrics,
+                                alerts = fetchedAlerts,
+                                pharmacies = fetchedPharmacies,
                             )
-
-                            Triple(token, fetchedMetrics, Pair(fetchedAlerts, fetchedPharmacies))
-                        }.onSuccess { result ->
-                            authToken = result.first
-                            metrics = result.second
-                            alerts = result.third.first
-                            pharmacies = result.third.second
-                            isLoggedIn = true
+                        }.onSuccess { snapshot ->
+                            serverUrl = normalizedUrl
+                            applySnapshot(snapshot)
                             currentDestination = AppDestination.Dashboard
+                            isLoggedIn = true
+                            screenMessage = null
                         }.onFailure { error ->
-                            loginError = error.message ?: "Не вдалося підключитися до сервера."
+                            loginError = repository.toUserMessage(error)
                         }
                         isLoading = false
                     }
@@ -151,12 +207,32 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                 AppTopBar(
                     title = selectedAlert?.let { "Інцидент" } ?: currentDestination.title,
                     onBack = if (selectedAlert != null) ({ selectedAlertId = null }) else null,
-                    onLogout = {
-                        selectedAlertId = null
-                        isLoggedIn = false
-                        authToken = null
-                        loginError = null
-                    },
+                    isRefreshing = isLoading,
+                    onRefresh = if (selectedAlert == null && authToken != null) ({
+                        val token = authToken ?: return@AppTopBar
+                        isLoading = true
+                        screenMessage = null
+                        scope.launch {
+                            val repository = BackendPharmaSmartRepository(serverUrl)
+                            runCatching {
+                                RemoteSnapshot(
+                                    token = token,
+                                    metrics = repository.getDashboardMetrics(token),
+                                    alerts = repository.getAlerts(token),
+                                    pharmacies = repository.getPharmacies(token),
+                                )
+                            }.onSuccess { snapshot ->
+                                applySnapshot(snapshot)
+                                if (selectedAlertId != null && alerts.none { it.id == selectedAlertId }) {
+                                    selectedAlertId = null
+                                }
+                            }.onFailure { error ->
+                                screenMessage = repository.toUserMessage(error)
+                            }
+                            isLoading = false
+                        }
+                    }) else null,
+                    onLogout = { logout() },
                 )
             },
             bottomBar = {
@@ -182,18 +258,21 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                     currentDestination == AppDestination.Dashboard -> DashboardScreen(
                         metrics = metrics,
                         topAlerts = alerts.take(3),
+                        message = screenMessage,
                         onAlertClick = { selectedAlertId = it.id },
                         modifier = Modifier.fillMaxSize(),
                     )
 
                     currentDestination == AppDestination.Alerts -> AlertsScreen(
                         alerts = alerts,
+                        message = screenMessage,
                         onAlertClick = { selectedAlertId = it.id },
                         modifier = Modifier.fillMaxSize(),
                     )
 
                     currentDestination == AppDestination.Pharmacies -> PharmaciesScreen(
                         pharmacies = pharmacies,
+                        message = screenMessage,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -252,53 +331,55 @@ private fun LoginScreen(
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("Server URL") },
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 )
                 OutlinedTextField(
                     value = email,
-                    onValueChange = {
-                        email = it
-                    },
+                    onValueChange = { email = it },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("Email") },
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                 )
                 OutlinedTextField(
                     value = password,
-                    onValueChange = {
-                        password = it
-                    },
+                    onValueChange = { password = it },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("Пароль") },
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     visualTransformation = PasswordVisualTransformation(),
                 )
                 if (errorMessage != null) {
-                    Text(
-                        text = errorMessage,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodyMedium,
+                    InlineMessage(
+                        message = errorMessage,
+                        isError = true,
                     )
                 }
                 Button(
-                    onClick = {
-                        onLogin(email, password)
-                    },
+                    onClick = { onLogin(email, password) },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
                     enabled = !isLoading,
                 ) {
                     if (isLoading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            strokeWidth = 2.dp,
-                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                strokeWidth = 2.dp,
+                            )
+                            Text("Підключення...")
+                        }
                     } else {
                         Text("Увійти до системи")
                     }
                 }
                 Text(
-                    text = "Вкажіть локальну адресу backend, наприклад http://192.168.x.x:8000",
+                    text = "За замовчуванням використовується hosted backend на Render. Для локальної розробки можна вказати свій URL.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -347,6 +428,8 @@ private fun BrandHeader() {
 private fun AppTopBar(
     title: String,
     onBack: (() -> Unit)?,
+    isRefreshing: Boolean,
+    onRefresh: (() -> Unit)?,
     onLogout: () -> Unit,
 ) {
     TopAppBar(
@@ -366,6 +449,19 @@ private fun AppTopBar(
         },
         actions = {
             if (onBack == null) {
+                if (onRefresh != null) {
+                    TextButton(onClick = onRefresh, enabled = !isRefreshing) {
+                        if (isRefreshing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = MaterialTheme.colorScheme.primary,
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Text("Оновити")
+                        }
+                    }
+                }
                 TextButton(onClick = onLogout) {
                     Text("Вийти")
                 }
@@ -411,6 +507,7 @@ private fun AppBottomBar(
 private fun DashboardScreen(
     metrics: DashboardMetrics,
     topAlerts: List<PharmacyAlert>,
+    message: String?,
     onAlertClick: (PharmacyAlert) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -436,14 +533,28 @@ private fun DashboardScreen(
         item {
             MetricsGrid(metrics = metrics)
         }
+        if (message != null) {
+            item {
+                InlineMessage(message = message)
+            }
+        }
         item {
             SectionTitle(
                 title = "Критичні події",
                 subtitle = "Останні події, які потребують реакції керівника або завідувача.",
             )
         }
-        items(topAlerts, key = { it.id }) { alert ->
-            AlertCard(alert = alert, onClick = { onAlertClick(alert) })
+        if (topAlerts.isEmpty()) {
+            item {
+                EmptyStateCard(
+                    title = "Активних тривог немає",
+                    subtitle = "Система не зафіксувала критичних подій у доступних аптеках.",
+                )
+            }
+        } else {
+            items(topAlerts, key = { it.id }) { alert ->
+                AlertCard(alert = alert, onClick = { onAlertClick(alert) })
+            }
         }
         item {
             Spacer(modifier = Modifier.height(12.dp))
@@ -462,7 +573,7 @@ private fun MetricsGrid(metrics: DashboardMetrics) {
                 accentColor = MaterialTheme.colorScheme.errorContainer,
             )
             MetricCard(
-                title = "Аптеки онлайн",
+                title = "Аптеки",
                 value = "${metrics.onlinePharmacies}/${metrics.totalPharmacies}",
                 modifier = Modifier.weight(1f),
                 accentColor = MaterialTheme.colorScheme.primaryContainer,
@@ -470,18 +581,24 @@ private fun MetricsGrid(metrics: DashboardMetrics) {
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             MetricCard(
-                title = "Партії під ризиком",
-                value = metrics.expiringBatches.toString(),
+                title = "Замовлення",
+                value = metrics.totalSalesOrders.toString(),
                 modifier = Modifier.weight(1f),
                 accentColor = MaterialTheme.colorScheme.secondaryContainer,
             )
             MetricCard(
-                title = "Дохід за день",
-                value = metrics.revenueToday,
+                title = "Персонал",
+                value = metrics.totalStaff.toString(),
                 modifier = Modifier.weight(1f),
                 accentColor = MaterialTheme.colorScheme.tertiaryContainer,
             )
         }
+        MetricCard(
+            title = "Виторг",
+            value = metrics.revenueToday,
+            modifier = Modifier.fillMaxWidth(),
+            accentColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        )
     }
 }
 
@@ -519,6 +636,7 @@ private fun MetricCard(
 @Composable
 private fun AlertsScreen(
     alerts: List<PharmacyAlert>,
+    message: String?,
     onAlertClick: (PharmacyAlert) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -555,8 +673,22 @@ private fun AlertsScreen(
                 }
             }
         }
-        items(filteredAlerts, key = { it.id }) { alert ->
-            AlertCard(alert = alert, onClick = { onAlertClick(alert) })
+        if (message != null) {
+            item {
+                InlineMessage(message = message)
+            }
+        }
+        if (filteredAlerts.isEmpty()) {
+            item {
+                EmptyStateCard(
+                    title = "Немає інцидентів для цього фільтра",
+                    subtitle = "Спробуйте змінити фільтр або оновити дані з сервера.",
+                )
+            }
+        } else {
+            items(filteredAlerts, key = { it.id }) { alert ->
+                AlertCard(alert = alert, onClick = { onAlertClick(alert) })
+            }
         }
         item {
             Spacer(modifier = Modifier.height(12.dp))
@@ -686,13 +818,16 @@ private fun AlertDetailsScreen(
             )
         }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 Button(
                     onClick = {},
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(16.dp),
                 ) {
-                    Text("Позначити в роботі")
+                    Text("Взяти в роботу")
                 }
                 OutlinedButton(
                     onClick = {},
@@ -741,6 +876,7 @@ private fun DetailCard(
 @Composable
 private fun PharmaciesScreen(
     pharmacies: List<PharmacySummary>,
+    message: String?,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -756,8 +892,22 @@ private fun PharmaciesScreen(
                 subtitle = "Зведена інформація щодо об'єктів, сенсорів і ризиків по кожній аптеці.",
             )
         }
-        items(pharmacies, key = { it.id }) { pharmacy ->
-            PharmacyCard(pharmacy = pharmacy)
+        if (message != null) {
+            item {
+                InlineMessage(message = message)
+            }
+        }
+        if (pharmacies.isEmpty()) {
+            item {
+                EmptyStateCard(
+                    title = "Аптеки не знайдені",
+                    subtitle = "Користувач не прив'язаний до аптеки або сервер ще не має даних.",
+                )
+            }
+        } else {
+            items(pharmacies, key = { it.id }) { pharmacy ->
+                PharmacyCard(pharmacy = pharmacy)
+            }
         }
         item {
             Spacer(modifier = Modifier.height(12.dp))
@@ -786,9 +936,18 @@ private fun PharmacyCard(pharmacy: PharmacySummary) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                CompactMetric(label = "T", value = if (pharmacy.temperature == 0.0) "--" else "${pharmacy.temperature}°C")
-                CompactMetric(label = "H", value = if (pharmacy.humidity == 0) "--" else "${pharmacy.humidity}%")
-                CompactMetric(label = "Інциденти", value = pharmacy.activeIncidents.toString())
+                CompactMetric(
+                    label = "T",
+                    value = if (pharmacy.temperature == 0.0) "--" else "${pharmacy.temperature}°C",
+                )
+                CompactMetric(
+                    label = "H",
+                    value = if (pharmacy.humidity == 0) "--" else "${pharmacy.humidity}%",
+                )
+                CompactMetric(
+                    label = "Інциденти",
+                    value = pharmacy.activeIncidents.toString(),
+                )
             }
             Text(
                 text = "Партій із ризиком списання: ${pharmacy.expiringBatches}",
@@ -836,5 +995,61 @@ private fun SectionTitle(
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+@Composable
+private fun InlineMessage(
+    message: String,
+    isError: Boolean = false,
+) {
+    val containerColor = if (isError) {
+        MaterialTheme.colorScheme.errorContainer
+    } else {
+        MaterialTheme.colorScheme.secondaryContainer
+    }
+    val textColor = if (isError) {
+        MaterialTheme.colorScheme.onErrorContainer
+    } else {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    }
+
+    Card(
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+    ) {
+        Text(
+            text = message,
+            modifier = Modifier.padding(16.dp),
+            style = MaterialTheme.typography.bodyMedium,
+            color = textColor,
+        )
+    }
+}
+
+@Composable
+private fun EmptyStateCard(
+    title: String,
+    subtitle: String,
+) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
