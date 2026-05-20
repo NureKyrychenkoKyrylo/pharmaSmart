@@ -93,6 +93,10 @@ class BackendPharmaSmartRepository(
     }
 
     private fun extractMedicineName(message: String): String {
+        val quotedName = "«([^»]+)»".toRegex().find(message)?.groupValues?.getOrNull(1)
+        if (!quotedName.isNullOrBlank()) {
+            return quotedName
+        }
         return message.substringAfter("Critical:", "")
             .substringBefore("->")
             .trim()

@@ -36,14 +36,68 @@ def build_violation_reasons(
     return violation_reasons
 
 
-def refresh_active_alert(alert: Alert, message: str):
+def build_human_alert_message(
+    subject: str,
+    temperature: float,
+    humidity: float,
+    min_t: float,
+    max_t: float,
+    min_h: float,
+    max_h: float,
+    is_location_level: bool = False,
+) -> str:
+    parts: List[str] = []
+
+    if temperature > max_t or temperature < min_t:
+        parts.append(
+            f"температура {temperature:.1f}°C при нормі {min_t:.1f}-{max_t:.1f}°C"
+        )
+
+    if humidity > max_h or humidity < min_h:
+        parts.append(
+            f"вологість {humidity:.0f}% при нормі {min_h:.0f}-{max_h:.0f}%"
+        )
+
+    prefix = (
+        f"Критичне відхилення в зоні зберігання «{subject}»."
+        if is_location_level
+        else f"Критичне відхилення для препарату «{subject}»."
+    )
+    details = " та ".join(parts) if parts else "Параметри вийшли за допустимі межі."
+    return f"{prefix} Зафіксовано {details}."
+
+
+def refresh_active_alert(
+    db: Session,
+    alert: Alert,
+    message: str,
+    device: IoTDevice,
+    subject: str,
+    reading: SensorReadingCreate,
+    scope: str,
+):
+    previous_message = alert.message
     alert.message = message
     alert.severity = "critical"
-    # We reuse created_at as the latest trigger timestamp because the schema
-    # does not yet have a dedicated updated_at/triggered_at field.
-    alert.created_at = datetime.utcnow()
     alert.resolved_at = None
     alert.is_resolved = False
+
+    if previous_message != message:
+        log_action(
+            db=db,
+            user_id=None,
+            action="ALERT_AUTO_UPDATED",
+            details={
+                "alert_id": alert.id,
+                "device_id": device.id,
+                "scope": scope,
+                "subject": subject,
+                "previous_message": previous_message,
+                "current_message": message,
+                "temperature": reading.temperature,
+                "humidity": reading.humidity,
+            },
+        )
 
 # РЕЄСТРАЦІЯ ПРИСТРОЮ (Адміністративна панель)
 @router.post(
@@ -142,10 +196,26 @@ def receive_metrics(
             )
 
             if violation_reasons:
-                msg_text = f"Critical: {medicine.name} -> " + ", ".join(violation_reasons)
+                msg_text = build_human_alert_message(
+                    subject=medicine.name,
+                    temperature=reading.temperature,
+                    humidity=reading.humidity,
+                    min_t=min_t,
+                    max_t=max_t,
+                    min_h=min_h,
+                    max_h=max_h,
+                )
                 
                 if existing_med_alert:
-                    refresh_active_alert(existing_med_alert, msg_text)
+                    refresh_active_alert(
+                        db=db,
+                        alert=existing_med_alert,
+                        message=msg_text,
+                        device=device,
+                        subject=medicine.name,
+                        reading=reading,
+                        scope="medicine",
+                    )
                     print(f"[AUTO] Alert Updated: {msg_text}")
                 else:
                     new_alert = Alert(
@@ -155,6 +225,19 @@ def receive_metrics(
                         is_resolved=False
                     )
                     db.add(new_alert)
+                    log_action(
+                        db,
+                        user_id=None,
+                        action="ALERT_AUTO_CREATED",
+                        details={
+                            "device_id": device.id,
+                            "scope": "medicine",
+                            "subject": medicine.name,
+                            "message": msg_text,
+                            "temperature": reading.temperature,
+                            "humidity": reading.humidity,
+                        },
+                    )
                     print(f"[AUTO] Alert Created: {msg_text}")
             
             else:
@@ -175,15 +258,32 @@ def receive_metrics(
                 max_h=DEFAULT_MAX_HUMIDITY,
             )
 
-            generic_message = f"Critical: {location.name} -> " + ", ".join(default_violations) if default_violations else ""
+            generic_message = build_human_alert_message(
+                subject=location.name,
+                temperature=reading.temperature,
+                humidity=reading.humidity,
+                min_t=DEFAULT_REFRIGERATED_MIN_T,
+                max_t=DEFAULT_REFRIGERATED_MAX_T,
+                min_h=DEFAULT_MIN_HUMIDITY,
+                max_h=DEFAULT_MAX_HUMIDITY,
+                is_location_level=True,
+            ) if default_violations else ""
             existing_generic_alert = next(
-                (alert for alert in active_alerts if alert.message.startswith(f"Critical: {location.name} ->")),
+                (alert for alert in active_alerts if location.name in alert.message),
                 None
             )
 
             if default_violations:
                 if existing_generic_alert:
-                    refresh_active_alert(existing_generic_alert, generic_message)
+                    refresh_active_alert(
+                        db=db,
+                        alert=existing_generic_alert,
+                        message=generic_message,
+                        device=device,
+                        subject=location.name,
+                        reading=reading,
+                        scope="location",
+                    )
                     print(f"[AUTO] Fallback Alert Updated: {generic_message}")
                 else:
                     db.add(Alert(
@@ -192,6 +292,19 @@ def receive_metrics(
                         message=generic_message,
                         is_resolved=False,
                     ))
+                    log_action(
+                        db,
+                        user_id=None,
+                        action="ALERT_AUTO_CREATED",
+                        details={
+                            "device_id": device.id,
+                            "scope": "location",
+                            "subject": location.name,
+                            "message": generic_message,
+                            "temperature": reading.temperature,
+                            "humidity": reading.humidity,
+                        },
+                    )
                     print(f"[AUTO] Fallback Alert Created: {generic_message}")
             elif not default_violations and existing_generic_alert:
                 existing_generic_alert.is_resolved = True
