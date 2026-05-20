@@ -36,6 +36,19 @@ data class ActiveAlertDto(
     val latest_humidity: Double?,
 )
 
+data class IncidentHistoryDto(
+    val id: Int,
+    val action: String,
+    val headline: String,
+    val message: String,
+    val created_at: String,
+    val pharmacy_name: String?,
+    val storage_location_name: String?,
+    val device_serial_number: String?,
+    val actor_name: String?,
+    val alert_id: Int?,
+)
+
 data class StorageLocationDto(
     val id: Int,
     val pharmacy_id: Int,

@@ -2,6 +2,7 @@ package com.example.pharmasmart.data
 
 import com.example.pharmasmart.data.model.AlertSeverity
 import com.example.pharmasmart.data.model.DashboardMetrics
+import com.example.pharmasmart.data.model.IncidentHistoryEntry
 import com.example.pharmasmart.data.model.PharmacyAlert
 import com.example.pharmasmart.data.model.PharmacySummary
 import com.example.pharmasmart.data.model.UserProfile
@@ -9,6 +10,7 @@ import com.example.pharmasmart.data.model.UserRole
 import com.example.pharmasmart.network.PharmaSmartApiFactory
 import retrofit2.HttpException
 import java.io.IOException
+import java.time.LocalDateTime
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.time.temporal.ChronoUnit
@@ -69,7 +71,25 @@ class BackendPharmaSmartRepository(
                 affectedMedicine = extractMedicineName(dto.message),
                 temperature = dto.latest_temperature ?: 0.0,
                 humidity = (dto.latest_humidity ?: 0.0).roundToInt(),
+                createdAt = dto.created_at,
                 minutesAgo = calculateMinutesAgo(dto.created_at),
+            )
+        }
+    }
+
+    suspend fun getIncidentHistory(token: String): List<IncidentHistoryEntry> {
+        return api.getIncidentHistory("Bearer $token").map { dto ->
+            IncidentHistoryEntry(
+                id = dto.id.toString(),
+                action = dto.action,
+                headline = dto.headline,
+                message = dto.message,
+                pharmacyName = dto.pharmacy_name ?: "Невідома аптека",
+                storageLocation = dto.storage_location_name ?: "Невідома локація",
+                deviceSerialNumber = dto.device_serial_number,
+                actorName = dto.actor_name ?: "Система",
+                createdAt = dto.created_at,
+                alertId = dto.alert_id?.toString(),
             )
         }
     }
@@ -90,6 +110,10 @@ class BackendPharmaSmartRepository(
 
     suspend fun resolveAlert(token: String, alertId: String) {
         api.resolveAlert(alertId.toInt(), "Bearer $token")
+    }
+
+    suspend fun escalateAlert(token: String, alertId: String) {
+        api.escalateAlert(alertId.toInt(), "Bearer $token")
     }
 
     private fun extractMedicineName(message: String): String {
@@ -118,9 +142,16 @@ class BackendPharmaSmartRepository(
 
     private fun calculateMinutesAgo(createdAt: String): Int {
         return runCatching {
-            val created = OffsetDateTime.parse(createdAt)
+            val created = parseApiDate(createdAt)
             val now = OffsetDateTime.now(ZoneOffset.UTC)
             ChronoUnit.MINUTES.between(created, now).toInt().coerceAtLeast(0)
         }.getOrDefault(0)
+    }
+
+    private fun parseApiDate(createdAt: String): OffsetDateTime {
+        return runCatching { OffsetDateTime.parse(createdAt) }
+            .getOrElse {
+                LocalDateTime.parse(createdAt).atOffset(ZoneOffset.UTC)
+            }
     }
 }

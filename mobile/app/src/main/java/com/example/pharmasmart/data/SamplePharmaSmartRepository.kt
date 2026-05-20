@@ -26,6 +26,7 @@ class SamplePharmaSmartRepository {
             affectedMedicine = "Інсулін",
             temperature = 9.4,
             humidity = 68,
+            createdAt = "2026-05-21T10:24:00",
             minutesAgo = 6,
         ),
         PharmacyAlert(
@@ -38,6 +39,7 @@ class SamplePharmaSmartRepository {
             affectedMedicine = "Вакцини",
             temperature = 4.8,
             humidity = 71,
+            createdAt = "2026-05-21T10:12:00",
             minutesAgo = 18,
         ),
         PharmacyAlert(
@@ -50,6 +52,7 @@ class SamplePharmaSmartRepository {
             affectedMedicine = "Адреналін",
             temperature = 10.1,
             humidity = 62,
+            createdAt = "2026-05-21T09:59:00",
             minutesAgo = 31,
         ),
         PharmacyAlert(
@@ -62,6 +65,7 @@ class SamplePharmaSmartRepository {
             affectedMedicine = "Антибіотики",
             temperature = 5.1,
             humidity = 60,
+            createdAt = "2026-05-21T09:43:00",
             minutesAgo = 47,
         ),
     )

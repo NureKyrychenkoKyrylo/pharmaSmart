@@ -42,12 +42,15 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -75,12 +78,19 @@ import com.example.pharmasmart.data.BackendPharmaSmartRepository
 import com.example.pharmasmart.data.SamplePharmaSmartRepository
 import com.example.pharmasmart.data.model.AlertSeverity
 import com.example.pharmasmart.data.model.DashboardMetrics
+import com.example.pharmasmart.data.model.IncidentHistoryEntry
 import com.example.pharmasmart.data.model.PharmacyAlert
 import com.example.pharmasmart.data.model.PharmacySummary
 import com.example.pharmasmart.data.model.UserProfile
 import com.example.pharmasmart.data.model.UserRole
 import com.example.pharmasmart.ui.theme.PharmasmartTheme
 import kotlinx.coroutines.launch
+import java.time.LocalDateTime
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 
 private const val DEFAULT_BACKEND_URL = "https://pharmasmart-ej5n.onrender.com"
 
@@ -120,6 +130,7 @@ private data class RemoteSnapshot(
     val metrics: DashboardMetrics,
     val alerts: List<PharmacyAlert>,
     val pharmacies: List<PharmacySummary>,
+    val incidentHistory: List<IncidentHistoryEntry>,
 )
 
 private data class PharmacyInsight(
@@ -132,11 +143,17 @@ private data class PharmacyInsight(
 fun PharmaSmartApp(modifier: Modifier = Modifier) {
     val sampleRepository = remember { SamplePharmaSmartRepository() }
     val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
 
     var isLoggedIn by rememberSaveable { mutableStateOf(false) }
     var isLoading by rememberSaveable { mutableStateOf(false) }
     var currentDestination by rememberSaveable { mutableStateOf(AppDestination.Dashboard) }
     var selectedAlertId by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedPharmacyId by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedHistoryEntryId by rememberSaveable { mutableStateOf<String?>(null) }
+    var incidentHistoryOpen by rememberSaveable { mutableStateOf(false) }
+    var incidentHistoryFilterPharmacy by rememberSaveable { mutableStateOf<String?>(null) }
+    var escalationInfoOpen by rememberSaveable { mutableStateOf(false) }
     var authToken by rememberSaveable { mutableStateOf<String?>(null) }
     var currentUser by remember { mutableStateOf<UserProfile?>(null) }
     var serverUrl by rememberSaveable { mutableStateOf(DEFAULT_BACKEND_URL) }
@@ -146,12 +163,20 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
     var alerts by remember { mutableStateOf(sampleRepository.getAlerts()) }
     var pharmacies by remember { mutableStateOf(sampleRepository.getPharmacies()) }
     var metrics by remember { mutableStateOf(sampleRepository.getDashboardMetrics()) }
+    var incidentHistory by remember { mutableStateOf(emptyList<IncidentHistoryEntry>()) }
+
+    fun showConfirmation(message: String) {
+        scope.launch {
+            snackbarHostState.showSnackbar(message)
+        }
+    }
 
     fun applySnapshot(snapshot: RemoteSnapshot) {
         authToken = snapshot.token
         currentUser = snapshot.user
         alerts = snapshot.alerts
         pharmacies = snapshot.pharmacies
+        incidentHistory = snapshot.incidentHistory
         metrics = snapshot.metrics.copy(
             onlinePharmacies = snapshot.pharmacies.size,
             totalPharmacies = snapshot.pharmacies.size,
@@ -164,12 +189,18 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
         authToken = null
         currentUser = null
         selectedAlertId = null
+        selectedPharmacyId = null
+        selectedHistoryEntryId = null
+        incidentHistoryOpen = false
+        incidentHistoryFilterPharmacy = null
+        escalationInfoOpen = false
         currentDestination = AppDestination.Dashboard
         loginError = null
         screenMessage = null
         alerts = sampleRepository.getAlerts()
         pharmacies = sampleRepository.getPharmacies()
         metrics = sampleRepository.getDashboardMetrics()
+        incidentHistory = emptyList()
     }
 
     Surface(
@@ -220,6 +251,7 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                                 metrics = fetchedMetrics,
                                 alerts = fetchedAlerts,
                                 pharmacies = fetchedPharmacies,
+                                incidentHistory = repository.getIncidentHistory(token),
                             )
                         }.onSuccess { snapshot ->
                             serverUrl = normalizedUrl
@@ -242,12 +274,26 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
         }
 
         val selectedAlert = alerts.firstOrNull { it.id == selectedAlertId }
+        val selectedPharmacy = pharmacies.firstOrNull { it.id == selectedPharmacyId }
+        val selectedHistoryEntry = incidentHistory.firstOrNull { it.id == selectedHistoryEntryId }
 
         Scaffold(
             topBar = {
                 AppTopBar(
-                    title = selectedAlert?.let { "Інцидент" } ?: currentDestination.title,
-                    onBack = if (selectedAlert != null) ({ selectedAlertId = null }) else null,
+                    title = when {
+                        selectedAlert != null -> "Інцидент"
+                        incidentHistoryOpen -> "Журнал інцидентів"
+                        else -> currentDestination.title
+                    },
+                    onBack = when {
+                        selectedAlert != null -> ({ selectedAlertId = null })
+                        incidentHistoryOpen -> ({
+                            incidentHistoryOpen = false
+                            incidentHistoryFilterPharmacy = null
+                            selectedHistoryEntryId = null
+                        })
+                        else -> null
+                    },
                     user = currentUser,
                     isRefreshing = isLoading,
                     onRefresh = if (selectedAlert == null && authToken != null) ({
@@ -275,12 +321,14 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                                     },
                                     alerts = repository.getAlerts(token),
                                     pharmacies = repository.getPharmacies(token),
+                                    incidentHistory = repository.getIncidentHistory(token),
                                 )
                             }.onSuccess { snapshot ->
                                 applySnapshot(snapshot)
                                 if (selectedAlertId != null && alerts.none { it.id == selectedAlertId }) {
                                     selectedAlertId = null
                                 }
+                                showConfirmation("Дані оновлено.")
                             }.onFailure { error ->
                                 screenMessage = repository.toUserMessage(error)
                             }
@@ -290,8 +338,11 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                     onLogout = { logout() },
                 )
             },
+            snackbarHost = {
+                SnackbarHost(hostState = snackbarHostState)
+            },
             bottomBar = {
-                if (selectedAlert == null) {
+                if (selectedAlert == null && !incidentHistoryOpen) {
                     AppBottomBar(
                         currentDestination = currentDestination,
                         userRole = currentUser?.role ?: UserRole.MANAGER,
@@ -309,6 +360,24 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                     selectedAlert != null -> AlertDetailsScreen(
                         alert = selectedAlert,
                         userRole = currentUser?.role,
+                        onExplainEscalation = { escalationInfoOpen = true },
+                        onEscalate = if (authToken != null) ({
+                            val token = authToken ?: return@AlertDetailsScreen
+                            isLoading = true
+                            scope.launch {
+                                val repository = BackendPharmaSmartRepository(serverUrl)
+                                runCatching {
+                                    repository.escalateAlert(token, selectedAlert.id)
+                                    repository.getIncidentHistory(token)
+                                }.onSuccess { fetchedHistory ->
+                                    incidentHistory = fetchedHistory
+                                    showConfirmation("Інцидент ескальовано й додано до журналу.")
+                                }.onFailure { error ->
+                                    screenMessage = repository.toUserMessage(error)
+                                }
+                                isLoading = false
+                            }
+                        }) else null,
                         onResolve = if (authToken != null && currentUser?.role != UserRole.PHARMACIST) ({
                             val token = authToken ?: return@AlertDetailsScreen
                             isLoading = true
@@ -316,11 +385,12 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                                 val repository = BackendPharmaSmartRepository(serverUrl)
                                 runCatching {
                                     repository.resolveAlert(token, selectedAlert.id)
-                                    repository.getAlerts(token)
-                                }.onSuccess { fetchedAlerts ->
+                                    Pair(repository.getAlerts(token), repository.getIncidentHistory(token))
+                                }.onSuccess { (fetchedAlerts, fetchedHistory) ->
                                     alerts = fetchedAlerts
+                                    incidentHistory = fetchedHistory
                                     selectedAlertId = null
-                                    screenMessage = "Інцидент успішно закрито."
+                                    showConfirmation("Інцидент успішно закрито.")
                                 }.onFailure { error ->
                                     screenMessage = repository.toUserMessage(error)
                                 }
@@ -330,12 +400,25 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                         modifier = Modifier.fillMaxSize(),
                     )
 
+                    incidentHistoryOpen -> IncidentHistoryScreen(
+                        history = incidentHistory,
+                        pharmacyFilter = incidentHistoryFilterPharmacy,
+                        onEntryClick = { selectedHistoryEntryId = it.id },
+                        onClearFilter = { incidentHistoryFilterPharmacy = null },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+
                     currentDestination == AppDestination.Dashboard && currentUser?.role != UserRole.PHARMACIST -> DashboardScreen(
                         metrics = metrics,
                         topAlerts = alerts.take(3),
                         message = screenMessage,
                         user = currentUser,
                         onAlertClick = { selectedAlertId = it.id },
+                        onOpenHistory = {
+                            incidentHistoryOpen = true
+                            incidentHistoryFilterPharmacy = null
+                        },
+                        onShowEscalationInfo = { escalationInfoOpen = true },
                         modifier = Modifier.fillMaxSize(),
                     )
 
@@ -344,6 +427,11 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                         message = screenMessage,
                         user = currentUser,
                         onAlertClick = { selectedAlertId = it.id },
+                        onOpenHistory = {
+                            incidentHistoryOpen = true
+                            incidentHistoryFilterPharmacy = null
+                        },
+                        onShowEscalationInfo = { escalationInfoOpen = true },
                         modifier = Modifier.fillMaxSize(),
                     )
 
@@ -351,10 +439,46 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                         pharmacies = pharmacies,
                         message = screenMessage,
                         user = currentUser,
+                        onPharmacyClick = { selectedPharmacyId = it.id },
+                        onOpenHistory = { pharmacyName ->
+                            incidentHistoryOpen = true
+                            incidentHistoryFilterPharmacy = pharmacyName.ifBlank { null }
+                        },
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
             }
+        }
+
+        if (selectedPharmacy != null) {
+            PharmacyDetailsDialog(
+                pharmacy = selectedPharmacy,
+                relatedAlerts = alerts.filter { it.pharmacyName == selectedPharmacy.name },
+                historyPreview = incidentHistory.filter { it.pharmacyName == selectedPharmacy.name }.take(5),
+                onDismiss = { selectedPharmacyId = null },
+                onOpenAlert = { alert ->
+                    selectedPharmacyId = null
+                    selectedAlertId = alert.id
+                },
+                onOpenHistory = {
+                    selectedPharmacyId = null
+                    incidentHistoryOpen = true
+                    incidentHistoryFilterPharmacy = selectedPharmacy.name
+                },
+            )
+        }
+
+        if (selectedHistoryEntry != null) {
+            IncidentHistoryDialog(
+                entry = selectedHistoryEntry,
+                onDismiss = { selectedHistoryEntryId = null },
+            )
+        }
+
+        if (escalationInfoOpen) {
+            EscalationGuideDialog(
+                onDismiss = { escalationInfoOpen = false },
+            )
         }
     }
 }
@@ -602,6 +726,8 @@ private fun DashboardScreen(
     message: String?,
     user: UserProfile?,
     onAlertClick: (PharmacyAlert) -> Unit,
+    onOpenHistory: () -> Unit,
+    onShowEscalationInfo: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -625,6 +751,16 @@ private fun DashboardScreen(
         }
         item {
             MetricsGrid(metrics = metrics)
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(onClick = onOpenHistory, shape = RoundedCornerShape(14.dp)) {
+                    Text("Журнал інцидентів")
+                }
+                OutlinedButton(onClick = onShowEscalationInfo, shape = RoundedCornerShape(14.dp)) {
+                    Text("Логіка ескалації")
+                }
+            }
         }
         if (message != null) {
             item {
@@ -732,6 +868,8 @@ private fun AlertsScreen(
     message: String?,
     user: UserProfile?,
     onAlertClick: (PharmacyAlert) -> Unit,
+    onOpenHistory: () -> Unit,
+    onShowEscalationInfo: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var filter by rememberSaveable { mutableStateOf(AlertFilter.All) }
@@ -768,6 +906,16 @@ private fun AlertsScreen(
                         onClick = { filter = option },
                         label = { Text(option.label) },
                     )
+                }
+            }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(onClick = onOpenHistory, shape = RoundedCornerShape(14.dp)) {
+                    Text("Журнал інцидентів")
+                }
+                OutlinedButton(onClick = onShowEscalationInfo, shape = RoundedCornerShape(14.dp)) {
+                    Text("Коли ескалувати")
                 }
             }
         }
@@ -859,7 +1007,7 @@ private fun AlertCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "${alert.minutesAgo} хв тому",
+                text = alert.relativeTimeLabel(),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
             )
@@ -871,6 +1019,8 @@ private fun AlertCard(
 private fun AlertDetailsScreen(
     alert: PharmacyAlert,
     userRole: UserRole?,
+    onExplainEscalation: () -> Unit,
+    onEscalate: (() -> Unit)?,
     onResolve: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
@@ -898,7 +1048,8 @@ private fun AlertDetailsScreen(
                 title = "Опис інциденту",
                 lines = listOf(
                     alert.message,
-                    "Час виникнення: ${alert.minutesAgo} хв тому",
+                    "Час виникнення: ${alert.relativeTimeLabel()}",
+                    "Точний час: ${alert.formattedCreatedAt()}",
                     if (alert.temperature == 0.0 && alert.humidity == 0) {
                         "Поточні показники: сенсорні дані недоступні"
                     } else {
@@ -906,6 +1057,20 @@ private fun AlertDetailsScreen(
                     },
                 ),
             )
+        }
+        item {
+            DetailCard(
+                title = "Логіка ескалації",
+                lines = listOf(
+                    "Ескалація потрібна, коли відхилення не зникає після первинної перевірки, повторюється або створює ризик для партій.",
+                    "Після ескалації подія потрапляє в журнал інцидентів і вимагає контролю відповідального працівника.",
+                ),
+            )
+        }
+        item {
+            TextButton(onClick = onExplainEscalation) {
+                Text("Пояснити ескалацію")
+            }
         }
         item {
             DetailCard(
@@ -935,7 +1100,7 @@ private fun AlertDetailsScreen(
                         Text("Закрити інцидент")
                     }
                     OutlinedButton(
-                        onClick = {},
+                        onClick = { onEscalate?.invoke() },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(16.dp),
                     ) {
@@ -984,6 +1149,8 @@ private fun PharmaciesScreen(
     pharmacies: List<PharmacySummary>,
     message: String?,
     user: UserProfile?,
+    onPharmacyClick: (PharmacySummary) -> Unit,
+    onOpenHistory: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -1003,6 +1170,16 @@ private fun PharmaciesScreen(
                 },
             )
         }
+        if (user?.role != UserRole.PHARMACIST) {
+            item {
+                OutlinedButton(
+                    onClick = { onOpenHistory("") },
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Text("Журнал по мережі")
+                }
+            }
+        }
         if (message != null) {
             item {
                 InlineMessage(message = message)
@@ -1017,7 +1194,11 @@ private fun PharmaciesScreen(
             }
         } else {
             items(pharmacies, key = { it.id }) { pharmacy ->
-                PharmacyCard(pharmacy = pharmacy)
+                PharmacyCard(
+                    pharmacy = pharmacy,
+                    onClick = { onPharmacyClick(pharmacy) },
+                    onStatusClick = { onPharmacyClick(pharmacy) },
+                )
             }
         }
         item {
@@ -1027,7 +1208,11 @@ private fun PharmaciesScreen(
 }
 
 @Composable
-private fun PharmacyCard(pharmacy: PharmacySummary) {
+private fun PharmacyCard(
+    pharmacy: PharmacySummary,
+    onClick: () -> Unit,
+    onStatusClick: () -> Unit,
+) {
     val healthState = pharmacy.healthState()
     val metrics = listOf(
         PharmacyInsight(
@@ -1048,7 +1233,9 @@ private fun PharmacyCard(pharmacy: PharmacySummary) {
     )
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
@@ -1084,11 +1271,13 @@ private fun PharmacyCard(pharmacy: PharmacySummary) {
                 StatusBadge(
                     text = healthState.label(),
                     accentColor = healthState.color(),
+                    onClick = onStatusClick,
                     modifier = Modifier.weight(1f),
                 )
                 StatusBadge(
                     text = pharmacy.expiringStatusLabel(),
                     accentColor = pharmacy.expiringStatusColor(),
+                    onClick = onStatusClick,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -1164,12 +1353,14 @@ private fun AdaptiveMetricsRow(metrics: List<PharmacyInsight>) {
 private fun StatusBadge(
     text: String,
     accentColor: Color,
+    onClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(16.dp))
             .background(accentColor.copy(alpha = 0.16f))
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1189,6 +1380,249 @@ private fun StatusBadge(
             overflow = TextOverflow.Ellipsis,
         )
     }
+}
+
+@Composable
+private fun PharmacyDetailsDialog(
+    pharmacy: PharmacySummary,
+    relatedAlerts: List<PharmacyAlert>,
+    historyPreview: List<IncidentHistoryEntry>,
+    onDismiss: () -> Unit,
+    onOpenAlert: (PharmacyAlert) -> Unit,
+    onOpenHistory: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = pharmacy.name,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+            )
+        },
+        text = {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                item {
+                    Text(
+                        text = pharmacy.address,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                item {
+                    Text(
+                        text = "Поточний статус: ${pharmacy.healthState().label()}",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                item {
+                    Text(
+                        text = "Останні показники: ${pharmacy.metricSummary()}",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                item {
+                    Text(
+                        text = "Активні тривоги",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                if (relatedAlerts.isEmpty()) {
+                    item {
+                        Text(
+                            text = "Наразі активних інцидентів для цієї аптеки немає.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                } else {
+                    items(relatedAlerts.take(3), key = { it.id }) { alert ->
+                        TextButton(onClick = { onOpenAlert(alert) }) {
+                            Text(alert.message, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+                item {
+                    Text(
+                        text = "Останні записи журналу",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                if (historyPreview.isEmpty()) {
+                    item {
+                        Text(
+                            text = "Для цієї аптеки ще немає записів у журналі.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                } else {
+                    items(historyPreview, key = { it.id }) { entry ->
+                        Text(
+                            text = "${entry.headline} • ${entry.relativeTimeLabel()}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onOpenHistory) {
+                Text("Повний журнал")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Закрити")
+            }
+        },
+    )
+}
+
+@Composable
+private fun IncidentHistoryScreen(
+    history: List<IncidentHistoryEntry>,
+    pharmacyFilter: String?,
+    onEntryClick: (IncidentHistoryEntry) -> Unit,
+    onClearFilter: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val filteredHistory = history.filter { pharmacyFilter.isNullOrBlank() || it.pharmacyName == pharmacyFilter }
+
+    LazyColumn(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            Spacer(modifier = Modifier.height(8.dp))
+            SectionTitle(
+                title = "Журнал інцидентів",
+                subtitle = pharmacyFilter?.let { "Події для аптеки $it." }
+                    ?: "Історія створення, оновлення, ескалації та закриття інцидентів.",
+            )
+        }
+        if (!pharmacyFilter.isNullOrBlank()) {
+            item {
+                TextButton(onClick = onClearFilter) {
+                    Text("Показати всю мережу")
+                }
+            }
+        }
+        if (filteredHistory.isEmpty()) {
+            item {
+                EmptyStateCard(
+                    title = "Журнал порожній",
+                    subtitle = "Історія інцидентів з'явиться тут після створення або оновлення тривог.",
+                )
+            }
+        } else {
+            items(filteredHistory, key = { it.id }) { entry ->
+                IncidentHistoryCard(entry = entry, onClick = { onEntryClick(entry) })
+            }
+        }
+        item {
+            Spacer(modifier = Modifier.height(12.dp))
+        }
+    }
+}
+
+@Composable
+private fun IncidentHistoryCard(
+    entry: IncidentHistoryEntry,
+    onClick: () -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = entry.headline,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "${entry.pharmacyName} • ${entry.storageLocation}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = entry.message,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = "${entry.relativeTimeLabel()} • ${entry.formattedCreatedAt()}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+    }
+}
+
+@Composable
+private fun IncidentHistoryDialog(
+    entry: IncidentHistoryEntry,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(entry.headline, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("${entry.pharmacyName} • ${entry.storageLocation}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(entry.message)
+                Text("Виконавець: ${entry.actorName}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Час: ${entry.formattedCreatedAt()}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (entry.deviceSerialNumber != null) {
+                    Text("Сенсор: ${entry.deviceSerialNumber}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Гаразд")
+            }
+        },
+    )
+}
+
+@Composable
+private fun EscalationGuideDialog(
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Логіка ескалації", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Попередження з'являється, коли параметри зберігання виходять за допустимі межі.")
+                Text("Ескалація потрібна, якщо відхилення триває, повторюється після перевірки або створює ризик для партій препарату.")
+                Text("Після ескалації інцидент не дублюється новим alert, а фіксується в журналі подій для контролю керівника чи адміністратора.")
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Зрозуміло")
+            }
+        },
+    )
 }
 
 @Composable
@@ -1392,4 +1826,43 @@ private fun PharmacySummary.storageStateLabel(): String = when (healthState()) {
     PharmacyHealthState.Stable -> "Активних інцидентів немає"
     PharmacyHealthState.Watch -> "Є відкрита тривога"
     PharmacyHealthState.Critical -> "Кілька відкритих тривог"
+}
+
+private val dateFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")
+
+private fun parseApiDateTime(value: String): OffsetDateTime? {
+    return runCatching { OffsetDateTime.parse(value) }
+        .getOrElse {
+            runCatching { LocalDateTime.parse(value).atOffset(ZoneOffset.UTC) }.getOrNull()
+        }
+}
+
+private fun formatRelativeTime(createdAt: String, fallbackMinutes: Int): String {
+    val created = parseApiDateTime(createdAt) ?: return if (fallbackMinutes <= 0) "щойно" else "$fallbackMinutes хв тому"
+    val minutes = ChronoUnit.MINUTES.between(created, OffsetDateTime.now(ZoneOffset.UTC)).toInt().coerceAtLeast(0)
+    return when {
+        minutes <= 0 -> "щойно"
+        minutes < 60 -> "$minutes хв тому"
+        minutes < 24 * 60 -> "${minutes / 60} год тому"
+        else -> "${minutes / (24 * 60)} дн тому"
+    }
+}
+
+private fun formatAbsoluteTime(createdAt: String): String {
+    return parseApiDateTime(createdAt)?.atZoneSameInstant(ZoneId.systemDefault())?.format(dateFormatter)
+        ?: createdAt
+}
+
+private fun PharmacyAlert.relativeTimeLabel(): String = formatRelativeTime(createdAt, minutesAgo)
+
+private fun PharmacyAlert.formattedCreatedAt(): String = formatAbsoluteTime(createdAt)
+
+private fun IncidentHistoryEntry.relativeTimeLabel(): String = formatRelativeTime(createdAt, 0)
+
+private fun IncidentHistoryEntry.formattedCreatedAt(): String = formatAbsoluteTime(createdAt)
+
+private fun PharmacySummary.metricSummary(): String {
+    val temperatureText = if (temperature == 0.0) "температура недоступна" else "температура ${temperature}°C"
+    val humidityText = if (humidity == 0) "вологість недоступна" else "вологість ${humidity}%"
+    return "$temperatureText, $humidityText, відкритих інцидентів $activeIncidents"
 }

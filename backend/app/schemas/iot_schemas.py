@@ -63,3 +63,19 @@ class ActiveAlertResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class IncidentHistoryResponse(BaseModel):
+    id: int
+    action: str
+    headline: str
+    message: str
+    created_at: datetime
+    pharmacy_name: Optional[str] = None
+    storage_location_name: Optional[str] = None
+    device_serial_number: Optional[str] = None
+    actor_name: Optional[str] = None
+    alert_id: Optional[int] = None
+
+    class Config:
+        from_attributes = True

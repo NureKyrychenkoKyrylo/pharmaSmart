@@ -4,8 +4,8 @@ from typing import List, Optional
 from datetime import datetime
 
 from app.db.database import get_db
-from app.db.models import IoTDevice, SensorReading, Medicine, Batch, Alert, User, StorageLocation
-from app.schemas.iot_schemas import ActiveAlertResponse, IoTDeviceCreate, IoTDeviceResponse, SensorReadingCreate, SensorReadingResponse
+from app.db.models import AuditLog, IoTDevice, SensorReading, Medicine, Batch, Alert, User, StorageLocation
+from app.schemas.iot_schemas import ActiveAlertResponse, IncidentHistoryResponse, IoTDeviceCreate, IoTDeviceResponse, SensorReadingCreate, SensorReadingResponse
 from app.api.deps import get_current_user, get_current_admin
 from app.services.audit_service import log_action
 
@@ -98,6 +98,60 @@ def refresh_active_alert(
                 "humidity": reading.humidity,
             },
         )
+
+
+def resolve_device_context(
+    db: Session,
+    device_id: Optional[int] = None,
+    alert_id: Optional[int] = None,
+    device_serial_number: Optional[str] = None,
+):
+    device = None
+
+    if device_id:
+        device = db.query(IoTDevice).filter(IoTDevice.id == device_id).first()
+    elif alert_id:
+        alert = db.query(Alert).filter(Alert.id == alert_id).first()
+        if alert:
+            device = db.query(IoTDevice).filter(IoTDevice.id == alert.device_id).first()
+    elif device_serial_number:
+        device = db.query(IoTDevice).filter(IoTDevice.serial_number == device_serial_number).first()
+
+    location = None
+    pharmacy = None
+
+    if device and device.storage_location_id:
+        location = db.query(StorageLocation).filter(StorageLocation.id == device.storage_location_id).first()
+        if location:
+            pharmacy = location.pharmacy
+
+    return device, location, pharmacy
+
+
+def build_history_headline(action: str, subject: Optional[str], actor_name: Optional[str]) -> str:
+    actor = actor_name or "Система"
+    subject_text = f" «{subject}»" if subject else ""
+    return {
+        "ALERT_AUTO_CREATED": f"{actor} відкрила інцидент{subject_text}",
+        "ALERT_AUTO_UPDATED": f"{actor} оновила інцидент{subject_text}",
+        "ALERT_AUTO_RESOLVED": f"{actor} автоматично закрила інцидент{subject_text}",
+        "ALERT_RESOLVED": f"{actor} закрив(ла) інцидент{subject_text}",
+        "ALERT_ESCALATED": f"{actor} ескалював(ла) інцидент{subject_text}",
+    }.get(action, f"{actor} зафіксував(ла) зміну інциденту{subject_text}")
+
+
+def build_history_message(action: str, details: dict) -> str:
+    if action == "ALERT_ESCALATED":
+        return details.get("escalation_note") or "Інцидент позначено для негайної уваги відповідального працівника."
+    if action == "ALERT_AUTO_UPDATED":
+        return details.get("current_message") or details.get("message") or "Параметри інциденту були оновлені."
+    return details.get("message") or details.get("reason") or "Подія зафіксована в журналі."
+
+
+def extract_subject_from_message(message: str) -> Optional[str]:
+    if "«" in message and "»" in message:
+        return message.split("«", 1)[1].split("»", 1)[0].strip()
+    return None
 
 # РЕЄСТРАЦІЯ ПРИСТРОЮ (Адміністративна панель)
 @router.post(
@@ -436,6 +490,63 @@ def get_active_alerts(
 
     return result
 
+
+@router.get("/incidents/history", response_model=List[IncidentHistoryResponse], summary="Журнал інцидентів")
+def get_incident_history(
+    pharmacy_id: Optional[int] = None,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    log_actions = [
+        "ALERT_AUTO_CREATED",
+        "ALERT_AUTO_UPDATED",
+        "ALERT_AUTO_RESOLVED",
+        "ALERT_RESOLVED",
+        "ALERT_ESCALATED",
+    ]
+    logs = db.query(AuditLog) \
+        .filter(AuditLog.action.in_(log_actions)) \
+        .order_by(AuditLog.created_at.desc()) \
+        .limit(max(limit, 1)) \
+        .all()
+
+    result: List[IncidentHistoryResponse] = []
+    for log in logs:
+        details = log.details or {}
+        device, location, pharmacy = resolve_device_context(
+            db=db,
+            device_id=details.get("device_id"),
+            alert_id=details.get("alert_id"),
+            device_serial_number=details.get("device_sn"),
+        )
+
+        if current_user.role != "admin":
+            if not current_user.pharmacy_id or not pharmacy or pharmacy.id != current_user.pharmacy_id:
+                continue
+        elif pharmacy_id and (not pharmacy or pharmacy.id != pharmacy_id):
+            continue
+
+        actor_name = log.user.full_name if log.user else "Система"
+        subject = details.get("subject")
+
+        result.append(
+            IncidentHistoryResponse(
+                id=log.id,
+                action=log.action,
+                headline=build_history_headline(log.action, subject, actor_name),
+                message=build_history_message(log.action, details),
+                created_at=log.created_at,
+                pharmacy_name=details.get("pharmacy_name") or (pharmacy.name if pharmacy else None),
+                storage_location_name=details.get("storage_location_name") or (location.name if location else None),
+                device_serial_number=details.get("device_sn") or (device.serial_number if device else None),
+                actor_name=actor_name,
+                alert_id=details.get("alert_id"),
+            )
+        )
+
+    return result
+
 # ВИРІШЕННЯ ТРИВОГИ (Resolve)
 @router.put("/alerts/{alert_id}/resolve", summary="Закрити інцидент")
 def resolve_alert(
@@ -465,10 +576,51 @@ def resolve_alert(
         action="ALERT_RESOLVED",
         details={
             "alert_id": alert.id,
+            "device_id": device.id,
             "device_sn": device.serial_number,
-            "message": alert.message
+            "message": alert.message,
+            "subject": extract_subject_from_message(alert.message),
+            "pharmacy_name": location.pharmacy.name if location and location.pharmacy else None,
+            "storage_location_name": location.name if location else None,
         }
     )
     
     db.commit()
     return {"status": "resolved"}
+
+
+@router.put("/alerts/{alert_id}/escalate", summary="Ескалувати інцидент")
+def escalate_alert(
+    alert_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    device = db.query(IoTDevice).filter(IoTDevice.id == alert.device_id).first()
+    location = db.query(StorageLocation).filter(StorageLocation.id == device.storage_location_id).first() if device and device.storage_location_id else None
+    pharmacy = location.pharmacy if location else None
+
+    if current_user.role != "admin":
+        if not current_user.pharmacy_id or not pharmacy or pharmacy.id != current_user.pharmacy_id:
+            raise HTTPException(status_code=403, detail="Not your alert")
+
+    log_action(
+        db,
+        user_id=current_user.id,
+        action="ALERT_ESCALATED",
+        details={
+            "alert_id": alert.id,
+            "device_id": device.id if device else None,
+            "device_sn": device.serial_number if device else None,
+            "message": alert.message,
+            "subject": extract_subject_from_message(alert.message),
+            "pharmacy_name": pharmacy.name if pharmacy else None,
+            "storage_location_name": location.name if location else None,
+            "escalation_note": "Інцидент ескальовано: потрібна перевірка обладнання, оцінка ризику для партій та контроль повторного вимірювання.",
+        },
+    )
+    db.commit()
+    return {"status": "escalated"}

@@ -38,6 +38,7 @@ data class PharmacyAlert(
     val affectedMedicine: String,
     val temperature: Double,
     val humidity: Int,
+    val createdAt: String,
     val minutesAgo: Int,
 )
 
@@ -49,4 +50,17 @@ data class PharmacySummary(
     val humidity: Int,
     val activeIncidents: Int,
     val expiringBatches: Int,
+)
+
+data class IncidentHistoryEntry(
+    val id: String,
+    val action: String,
+    val headline: String,
+    val message: String,
+    val pharmacyName: String,
+    val storageLocation: String,
+    val deviceSerialNumber: String?,
+    val actorName: String,
+    val createdAt: String,
+    val alertId: String?,
 )

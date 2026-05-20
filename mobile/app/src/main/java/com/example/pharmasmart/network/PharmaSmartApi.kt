@@ -31,6 +31,11 @@ interface PharmaSmartApi {
         @Header("Authorization") authorization: String,
     ): List<ActiveAlertDto>
 
+    @GET("iot/incidents/history")
+    suspend fun getIncidentHistory(
+        @Header("Authorization") authorization: String,
+    ): List<IncidentHistoryDto>
+
     @GET("pharmacies/")
     suspend fun getPharmacies(
         @Header("Authorization") authorization: String,
@@ -38,6 +43,12 @@ interface PharmaSmartApi {
 
     @PUT("iot/alerts/{alertId}/resolve")
     suspend fun resolveAlert(
+        @Path("alertId") alertId: Int,
+        @Header("Authorization") authorization: String,
+    ): Map<String, Any>
+
+    @PUT("iot/alerts/{alertId}/escalate")
+    suspend fun escalateAlert(
         @Path("alertId") alertId: Int,
         @Header("Authorization") authorization: String,
     ): Map<String, Any>
