@@ -80,9 +80,9 @@ class BackendPharmaSmartRepository(
                 id = dto.id.toString(),
                 name = dto.name,
                 address = dto.address,
-                temperature = 0.0,
-                humidity = 0,
-                activeIncidents = 0,
+                temperature = dto.latest_temperature ?: 0.0,
+                humidity = (dto.latest_humidity ?: 0.0).roundToInt(),
+                activeIncidents = dto.active_alerts,
                 expiringBatches = 0,
             )
         }

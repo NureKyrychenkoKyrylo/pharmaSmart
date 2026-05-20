@@ -51,5 +51,8 @@ data class PharmacyDto(
     val license_number: String,
     val license_expiry_date: String?,
     val phone: String?,
+    val active_alerts: Int = 0,
+    val latest_temperature: Double? = null,
+    val latest_humidity: Double? = null,
     val storage_locations: List<StorageLocationDto> = emptyList(),
 )

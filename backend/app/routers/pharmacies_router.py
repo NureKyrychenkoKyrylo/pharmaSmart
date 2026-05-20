@@ -1,9 +1,11 @@
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
 from app.db.database import get_db
-from app.db.models import Pharmacy, StorageLocation, User
+from app.db.models import Alert, IoTDevice, Pharmacy, SensorReading, StorageLocation, User
 from app.schemas.pharmacy_schemas import PharmacyCreate, PharmacyResponse, StorageLocationCreate, StorageLocationResponse
 from app.api.deps import get_current_user, get_current_admin
 
@@ -56,13 +58,47 @@ def read_pharmacies(
     query = db.query(Pharmacy)
 
     if current_user.role == "admin":
-        # Адмін бачить все
-        return query.all()
+        pharmacies = query.all()
     else:
-        # Інші бачать тільки ту аптеку, до якої прив'язані
         if not current_user.pharmacy_id:
             return []
-        return query.filter(Pharmacy.id == current_user.pharmacy_id).all()
+        pharmacies = query.filter(Pharmacy.id == current_user.pharmacy_id).all()
+
+    result: List[PharmacyResponse] = []
+    for pharmacy in pharmacies:
+        active_alerts = db.query(func.count(Alert.id)) \
+            .join(IoTDevice, Alert.device_id == IoTDevice.id) \
+            .join(StorageLocation, IoTDevice.storage_location_id == StorageLocation.id) \
+            .filter(
+                StorageLocation.pharmacy_id == pharmacy.id,
+                Alert.is_resolved == False,
+            ) \
+            .scalar() or 0
+
+        latest_reading = db.query(SensorReading) \
+            .join(IoTDevice, SensorReading.device_id == IoTDevice.id) \
+            .join(StorageLocation, IoTDevice.storage_location_id == StorageLocation.id) \
+            .filter(StorageLocation.pharmacy_id == pharmacy.id) \
+            .order_by(SensorReading.recorded_at.desc()) \
+            .first()
+
+        result.append(
+            PharmacyResponse(
+                id=pharmacy.id,
+                name=pharmacy.name,
+                address=pharmacy.address,
+                license_number=pharmacy.license_number,
+                license_expiry_date=pharmacy.license_expiry_date,
+                phone=pharmacy.phone,
+                created_at=pharmacy.created_at or datetime.utcnow(),
+                active_alerts=active_alerts,
+                latest_temperature=latest_reading.temperature if latest_reading else None,
+                latest_humidity=latest_reading.humidity if latest_reading else None,
+                storage_locations=pharmacy.storage_locations,
+            )
+        )
+
+    return result
 
 
 @router.delete(

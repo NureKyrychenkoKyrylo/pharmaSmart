@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,12 +23,25 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Logout
+import androidx.compose.material.icons.outlined.Dashboard
+import androidx.compose.material.icons.outlined.Inventory2
+import androidx.compose.material.icons.outlined.LocalPharmacy
+import androidx.compose.material.icons.outlined.LocationOn
+import androidx.compose.material.icons.outlined.NotificationsActive
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Thermostat
+import androidx.compose.material.icons.outlined.WarningAmber
+import androidx.compose.material.icons.outlined.WaterDrop
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -50,6 +64,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -87,6 +102,12 @@ private enum class AppDestination(val title: String) {
     Pharmacies("Аптеки"),
 }
 
+private enum class PharmacyHealthState {
+    Stable,
+    Watch,
+    Critical,
+}
+
 private enum class AlertFilter(val label: String) {
     All("Усі"),
     Critical("Критичні"),
@@ -99,6 +120,12 @@ private data class RemoteSnapshot(
     val metrics: DashboardMetrics,
     val alerts: List<PharmacyAlert>,
     val pharmacies: List<PharmacySummary>,
+)
+
+private data class PharmacyInsight(
+    val label: String,
+    val icon: ImageVector,
+    val value: String,
 )
 
 @Composable
@@ -121,22 +148,13 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
     var metrics by remember { mutableStateOf(sampleRepository.getDashboardMetrics()) }
 
     fun applySnapshot(snapshot: RemoteSnapshot) {
-        val enrichedPharmacies = snapshot.pharmacies.map { pharmacy ->
-            val pharmacyAlerts = snapshot.alerts.filter { it.pharmacyName == pharmacy.name }
-            pharmacy.copy(
-                activeIncidents = pharmacyAlerts.size,
-                temperature = pharmacyAlerts.firstOrNull { it.temperature != 0.0 }?.temperature ?: pharmacy.temperature,
-                humidity = pharmacyAlerts.firstOrNull { it.humidity != 0 }?.humidity ?: pharmacy.humidity,
-            )
-        }
-
         authToken = snapshot.token
         currentUser = snapshot.user
         alerts = snapshot.alerts
-        pharmacies = enrichedPharmacies
+        pharmacies = snapshot.pharmacies
         metrics = snapshot.metrics.copy(
-            onlinePharmacies = enrichedPharmacies.size,
-            totalPharmacies = enrichedPharmacies.size,
+            onlinePharmacies = snapshot.pharmacies.size,
+            totalPharmacies = snapshot.pharmacies.size,
         )
     }
 
@@ -520,7 +538,7 @@ private fun AppTopBar(
         actions = {
             if (onBack == null) {
                 if (onRefresh != null) {
-                    TextButton(onClick = onRefresh, enabled = !isRefreshing) {
+                    IconButton(onClick = onRefresh, enabled = !isRefreshing) {
                         if (isRefreshing) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(16.dp),
@@ -528,12 +546,18 @@ private fun AppTopBar(
                                 strokeWidth = 2.dp,
                             )
                         } else {
-                            Text("Оновити")
+                            Icon(
+                                imageVector = Icons.Outlined.Refresh,
+                                contentDescription = "Оновити",
+                            )
                         }
                     }
                 }
-                TextButton(onClick = onLogout) {
-                    Text("Вийти")
+                IconButton(onClick = onLogout) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.Logout,
+                        contentDescription = "Вийти",
+                    )
                 }
             }
         },
@@ -560,17 +584,9 @@ private fun AppBottomBar(
                 selected = destination == currentDestination,
                 onClick = { onSelect(destination) },
                 icon = {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (destination == currentDestination) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.outline
-                                },
-                            ),
+                    Icon(
+                        imageVector = destination.icon(),
+                        contentDescription = destination.title,
                     )
                 },
                 label = { Text(destination.title) },
@@ -1012,7 +1028,27 @@ private fun PharmaciesScreen(
 
 @Composable
 private fun PharmacyCard(pharmacy: PharmacySummary) {
+    val healthState = pharmacy.healthState()
+    val metrics = listOf(
+        PharmacyInsight(
+            label = "Температура",
+            icon = Icons.Outlined.Thermostat,
+            value = if (pharmacy.temperature == 0.0) "--" else "${pharmacy.temperature}°C",
+        ),
+        PharmacyInsight(
+            label = "Вологість",
+            icon = Icons.Outlined.WaterDrop,
+            value = if (pharmacy.humidity == 0) "--" else "${pharmacy.humidity}%",
+        ),
+        PharmacyInsight(
+            label = "Інциденти",
+            icon = Icons.Outlined.WarningAmber,
+            value = pharmacy.activeIncidents.toString(),
+        ),
+    )
+
     Card(
+        modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
@@ -1025,50 +1061,201 @@ private fun PharmacyCard(pharmacy: PharmacySummary) {
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
-            Text(
-                text = pharmacy.address,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                CompactMetric(
-                    label = "T",
-                    value = if (pharmacy.temperature == 0.0) "--" else "${pharmacy.temperature}°C",
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.LocationOn,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp),
                 )
-                CompactMetric(
-                    label = "H",
-                    value = if (pharmacy.humidity == 0) "--" else "${pharmacy.humidity}%",
-                )
-                CompactMetric(
-                    label = "Інциденти",
-                    value = pharmacy.activeIncidents.toString(),
+                Text(
+                    text = pharmacy.address,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                StatusBadge(
+                    text = healthState.label(),
+                    accentColor = healthState.color(),
+                    modifier = Modifier.weight(1f),
+                )
+                StatusBadge(
+                    text = pharmacy.expiringStatusLabel(),
+                    accentColor = pharmacy.expiringStatusColor(),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            AdaptiveMetricsRow(metrics = metrics)
             Text(
-                text = "Партій із ризиком списання: ${pharmacy.expiringBatches}",
+                text = pharmacy.trackingSummary(),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                InfoPill(
+                    icon = Icons.Outlined.Inventory2,
+                    text = "Партій із ризиком списання: ${pharmacy.expiringBatches}",
+                    modifier = Modifier.weight(1f),
+                )
+                InfoPill(
+                    icon = Icons.Outlined.LocalPharmacy,
+                    text = pharmacy.storageStateLabel(),
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun CompactMetric(label: String, value: String) {
-    Column(
-        modifier = Modifier
+private fun AdaptiveMetricsRow(metrics: List<PharmacyInsight>) {
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        if (maxWidth < 360.dp) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                metrics.chunked(2).forEach { rowMetrics ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        rowMetrics.forEach { metric ->
+                            CompactMetric(
+                                label = metric.label,
+                                value = metric.value,
+                                icon = metric.icon,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        if (rowMetrics.size == 1) {
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                metrics.forEach { metric ->
+                    CompactMetric(
+                        label = metric.label,
+                        value = metric.value,
+                        icon = metric.icon,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatusBadge(
+    text: String,
+    accentColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
             .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .background(accentColor.copy(alpha = 0.16f))
             .padding(horizontal = 12.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .clip(CircleShape)
+                .background(accentColor),
         )
         Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            color = accentColor,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun InfoPill(
+    icon: ImageVector,
+    text: String,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.primary,
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun CompactMetric(
+    label: String,
+    value: String,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(
             text = value,
-            style = MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
         )
     }
@@ -1153,4 +1340,56 @@ private fun UserRole.displayName(): String = when (this) {
     UserRole.ADMIN -> "Адміністратор"
     UserRole.MANAGER -> "Завідувач"
     UserRole.PHARMACIST -> "Фармацевт"
+}
+
+private fun AppDestination.icon(): ImageVector = when (this) {
+    AppDestination.Dashboard -> Icons.Outlined.Dashboard
+    AppDestination.Alerts -> Icons.Outlined.NotificationsActive
+    AppDestination.Pharmacies -> Icons.Outlined.LocalPharmacy
+}
+
+private fun PharmacySummary.healthState(): PharmacyHealthState {
+    return when {
+        activeIncidents >= 2 -> PharmacyHealthState.Critical
+        activeIncidents > 0 -> PharmacyHealthState.Watch
+        else -> PharmacyHealthState.Stable
+    }
+}
+
+private fun PharmacyHealthState.label(): String = when (this) {
+    PharmacyHealthState.Stable -> "Стан стабільний"
+    PharmacyHealthState.Watch -> "Потрібен контроль"
+    PharmacyHealthState.Critical -> "Ризик зберігання"
+}
+
+@Composable
+private fun PharmacyHealthState.color(): Color = when (this) {
+    PharmacyHealthState.Stable -> Color(0xFF2E7D32)
+    PharmacyHealthState.Watch -> Color(0xFFB26A00)
+    PharmacyHealthState.Critical -> MaterialTheme.colorScheme.error
+}
+
+private fun PharmacySummary.expiringStatusLabel(): String = when {
+    expiringBatches == 0 -> "Списання не очікується"
+    expiringBatches < 3 -> "Є партії під наглядом"
+    else -> "Терміновий перегляд партій"
+}
+
+@Composable
+private fun PharmacySummary.expiringStatusColor(): Color = when {
+    expiringBatches == 0 -> MaterialTheme.colorScheme.primary
+    expiringBatches < 3 -> Color(0xFF9C6B00)
+    else -> MaterialTheme.colorScheme.error
+}
+
+private fun PharmacySummary.trackingSummary(): String = when (healthState()) {
+    PharmacyHealthState.Stable -> "Поточні показники доступні, активних тривог для цієї аптеки немає."
+    PharmacyHealthState.Watch -> "Для цієї аптеки є активна тривога. Перевірте розділ \"Тривоги\"."
+    PharmacyHealthState.Critical -> "Для цієї аптеки зафіксовано кілька активних тривог. Потрібна швидка реакція."
+}
+
+private fun PharmacySummary.storageStateLabel(): String = when (healthState()) {
+    PharmacyHealthState.Stable -> "Активних інцидентів немає"
+    PharmacyHealthState.Watch -> "Є відкрита тривога"
+    PharmacyHealthState.Critical -> "Кілька відкритих тривог"
 }

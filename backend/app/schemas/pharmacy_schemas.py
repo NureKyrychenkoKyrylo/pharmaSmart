@@ -32,6 +32,9 @@ class PharmacyCreate(PharmacyBase):
 class PharmacyResponse(PharmacyBase):
     id: int
     created_at: datetime
+    active_alerts: int = 0
+    latest_temperature: Optional[float] = None
+    latest_humidity: Optional[float] = None
     # Можемо вкладати сюди список холодильників, якщо треба
     storage_locations: List[StorageLocationResponse] = []
 

@@ -11,6 +11,30 @@ from app.services.audit_service import log_action
 
 router = APIRouter()
 
+DEFAULT_REFRIGERATED_MIN_T = 2.0
+DEFAULT_REFRIGERATED_MAX_T = 8.0
+DEFAULT_MIN_HUMIDITY = 45.0
+DEFAULT_MAX_HUMIDITY = 65.0
+
+
+def build_violation_reasons(
+    temperature: float,
+    humidity: float,
+    min_t: float,
+    max_t: float,
+    min_h: float,
+    max_h: float,
+) -> List[str]:
+    violation_reasons: List[str] = []
+
+    if temperature > max_t or temperature < min_t:
+        violation_reasons.append(f"Temp {temperature}°C (Limit: {min_t}-{max_t})")
+
+    if humidity > max_h or humidity < min_h:
+        violation_reasons.append(f"Humidity {humidity}% (Limit: {min_h}-{max_h})")
+
+    return violation_reasons
+
 # РЕЄСТРАЦІЯ ПРИСТРОЮ (Адміністративна панель)
 @router.post(
     "/devices",
@@ -81,9 +105,10 @@ def receive_metrics(
         battery_level=reading.battery_level
     )
     db.add(db_reading)
+    device.last_seen = datetime.utcnow()
     
     if device.storage_location_id:
-        
+        location = db.query(StorageLocation).filter(StorageLocation.id == device.storage_location_id).first()
         active_alerts = db.query(Alert).filter(
             Alert.device_id == device.id, 
             Alert.is_resolved == False
@@ -97,17 +122,15 @@ def receive_metrics(
             min_h, max_h = medicine.min_humidity, medicine.max_humidity
             
             existing_med_alert = next((a for a in active_alerts if medicine.name in a.message), None)
+            violation_reasons = build_violation_reasons(
+                temperature=reading.temperature,
+                humidity=reading.humidity,
+                min_t=min_t,
+                max_t=max_t,
+                min_h=min_h,
+                max_h=max_h,
+            )
 
-            violation_reasons = []
-            
-            if reading.temperature > max_t or reading.temperature < min_t:
-                violation_reasons.append(f"Temp {reading.temperature}°C (Limit: {min_t}-{max_t})")
-            
-            if reading.humidity > max_h or reading.humidity < min_h:
-                violation_reasons.append(f"Humidity {reading.humidity}% (Limit: {min_h}-{max_h})")
-
-            # --- ЛОГІКА АЛЕРТІВ ---
-            
             if violation_reasons:
                 msg_text = f"Critical: {medicine.name} -> " + ", ".join(violation_reasons)
                 
@@ -128,6 +151,41 @@ def receive_metrics(
                     log_action(db, user_id=None, action="ALERT_AUTO_RESOLVED", 
                                details={"medicine": medicine.name, "reason": "Conditions normalized"})
                     print(f"[AUTO] Alert Resolved for {medicine.name}")
+
+        if not unique_medicines and location:
+            default_violations = build_violation_reasons(
+                temperature=reading.temperature,
+                humidity=reading.humidity,
+                min_t=DEFAULT_REFRIGERATED_MIN_T,
+                max_t=DEFAULT_REFRIGERATED_MAX_T,
+                min_h=DEFAULT_MIN_HUMIDITY,
+                max_h=DEFAULT_MAX_HUMIDITY,
+            )
+
+            generic_message = f"Critical: {location.name} -> " + ", ".join(default_violations) if default_violations else ""
+            existing_generic_alert = next(
+                (alert for alert in active_alerts if alert.message.startswith(f"Critical: {location.name} ->")),
+                None
+            )
+
+            if default_violations and not existing_generic_alert:
+                db.add(Alert(
+                    device_id=device.id,
+                    severity="critical",
+                    message=generic_message,
+                    is_resolved=False,
+                ))
+                print(f"[AUTO] Fallback Alert Created: {generic_message}")
+            elif not default_violations and existing_generic_alert:
+                existing_generic_alert.is_resolved = True
+                existing_generic_alert.resolved_at = datetime.utcnow()
+                log_action(
+                    db,
+                    user_id=None,
+                    action="ALERT_AUTO_RESOLVED",
+                    details={"location": location.name, "reason": "Conditions normalized"},
+                )
+                print(f"[AUTO] Fallback Alert Resolved for {location.name}")
 
     db.commit()
     db.refresh(db_reading)
