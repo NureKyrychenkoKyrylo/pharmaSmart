@@ -5,6 +5,8 @@ import retrofit2.http.FormUrlEncoded
 import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.POST
+import retrofit2.http.PUT
+import retrofit2.http.Path
 
 interface PharmaSmartApi {
     @FormUrlEncoded
@@ -13,6 +15,11 @@ interface PharmaSmartApi {
         @Field("username") username: String,
         @Field("password") password: String,
     ): LoginResponse
+
+    @GET("auth/me")
+    suspend fun getCurrentUser(
+        @Header("Authorization") authorization: String,
+    ): CurrentUserDto
 
     @GET("admin/dashboard-stats")
     suspend fun getDashboardStats(
@@ -28,4 +35,10 @@ interface PharmaSmartApi {
     suspend fun getPharmacies(
         @Header("Authorization") authorization: String,
     ): List<PharmacyDto>
+
+    @PUT("iot/alerts/{alertId}/resolve")
+    suspend fun resolveAlert(
+        @Path("alertId") alertId: Int,
+        @Header("Authorization") authorization: String,
+    ): Map<String, Any>
 }

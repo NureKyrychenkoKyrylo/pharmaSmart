@@ -4,6 +4,8 @@ import com.example.pharmasmart.data.model.AlertSeverity
 import com.example.pharmasmart.data.model.DashboardMetrics
 import com.example.pharmasmart.data.model.PharmacyAlert
 import com.example.pharmasmart.data.model.PharmacySummary
+import com.example.pharmasmart.data.model.UserProfile
+import com.example.pharmasmart.data.model.UserRole
 import com.example.pharmasmart.network.PharmaSmartApiFactory
 import retrofit2.HttpException
 import java.io.IOException
@@ -19,6 +21,21 @@ class BackendPharmaSmartRepository(
 
     suspend fun login(email: String, password: String): String {
         return api.login(email, password).access_token
+    }
+
+    suspend fun getCurrentUser(token: String): UserProfile {
+        val dto = api.getCurrentUser("Bearer $token")
+        return UserProfile(
+            id = dto.id,
+            fullName = dto.full_name,
+            email = dto.email,
+            role = when (dto.role.lowercase()) {
+                "admin" -> UserRole.ADMIN
+                "manager" -> UserRole.MANAGER
+                else -> UserRole.PHARMACIST
+            },
+            pharmacyId = dto.pharmacy_id,
+        )
     }
 
     suspend fun getDashboardMetrics(token: String): DashboardMetrics {
@@ -69,6 +86,10 @@ class BackendPharmaSmartRepository(
                 expiringBatches = 0,
             )
         }
+    }
+
+    suspend fun resolveAlert(token: String, alertId: String) {
+        api.resolveAlert(alertId.toInt(), "Bearer $token")
     }
 
     private fun extractMedicineName(message: String): String {

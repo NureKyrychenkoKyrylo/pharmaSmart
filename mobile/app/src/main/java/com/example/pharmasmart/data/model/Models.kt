@@ -5,6 +5,20 @@ enum class AlertSeverity {
     WARNING,
 }
 
+enum class UserRole {
+    ADMIN,
+    MANAGER,
+    PHARMACIST,
+}
+
+data class UserProfile(
+    val id: Int,
+    val fullName: String,
+    val email: String,
+    val role: UserRole,
+    val pharmacyId: Int?,
+)
+
 data class DashboardMetrics(
     val activeAlerts: Int,
     val onlinePharmacies: Int,

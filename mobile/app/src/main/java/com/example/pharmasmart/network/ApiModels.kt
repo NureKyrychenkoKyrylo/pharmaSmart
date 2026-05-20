@@ -5,6 +5,15 @@ data class LoginResponse(
     val token_type: String,
 )
 
+data class CurrentUserDto(
+    val id: Int,
+    val email: String,
+    val full_name: String,
+    val role: String,
+    val pharmacy_id: Int?,
+    val is_active: Boolean,
+)
+
 data class DashboardStatsDto(
     val pharmacy_filter: String,
     val total_sales_orders: Int,

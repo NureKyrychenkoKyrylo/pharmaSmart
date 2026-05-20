@@ -62,6 +62,8 @@ import com.example.pharmasmart.data.model.AlertSeverity
 import com.example.pharmasmart.data.model.DashboardMetrics
 import com.example.pharmasmart.data.model.PharmacyAlert
 import com.example.pharmasmart.data.model.PharmacySummary
+import com.example.pharmasmart.data.model.UserProfile
+import com.example.pharmasmart.data.model.UserRole
 import com.example.pharmasmart.ui.theme.PharmasmartTheme
 import kotlinx.coroutines.launch
 
@@ -93,6 +95,7 @@ private enum class AlertFilter(val label: String) {
 
 private data class RemoteSnapshot(
     val token: String,
+    val user: UserProfile,
     val metrics: DashboardMetrics,
     val alerts: List<PharmacyAlert>,
     val pharmacies: List<PharmacySummary>,
@@ -108,6 +111,7 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
     var currentDestination by rememberSaveable { mutableStateOf(AppDestination.Dashboard) }
     var selectedAlertId by rememberSaveable { mutableStateOf<String?>(null) }
     var authToken by rememberSaveable { mutableStateOf<String?>(null) }
+    var currentUser by remember { mutableStateOf<UserProfile?>(null) }
     var serverUrl by rememberSaveable { mutableStateOf(DEFAULT_BACKEND_URL) }
     var loginError by rememberSaveable { mutableStateOf<String?>(null) }
     var screenMessage by rememberSaveable { mutableStateOf<String?>(null) }
@@ -127,6 +131,7 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
         }
 
         authToken = snapshot.token
+        currentUser = snapshot.user
         alerts = snapshot.alerts
         pharmacies = enrichedPharmacies
         metrics = snapshot.metrics.copy(
@@ -139,6 +144,7 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
         isLoggedIn = false
         isLoading = false
         authToken = null
+        currentUser = null
         selectedAlertId = null
         currentDestination = AppDestination.Dashboard
         loginError = null
@@ -175,11 +181,24 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                         val repository = BackendPharmaSmartRepository(normalizedUrl)
                         runCatching {
                             val token = repository.login(email.trim(), password)
+                            val user = repository.getCurrentUser(token)
                             val fetchedAlerts = repository.getAlerts(token)
                             val fetchedPharmacies = repository.getPharmacies(token)
-                            val fetchedMetrics = repository.getDashboardMetrics(token)
+                            val fetchedMetrics = if (user.role == UserRole.PHARMACIST) {
+                                DashboardMetrics(
+                                    activeAlerts = fetchedAlerts.size,
+                                    onlinePharmacies = 0,
+                                    totalPharmacies = 0,
+                                    totalSalesOrders = 0,
+                                    totalStaff = 0,
+                                    revenueToday = "—",
+                                )
+                            } else {
+                                repository.getDashboardMetrics(token)
+                            }
                             RemoteSnapshot(
                                 token = token,
+                                user = user,
                                 metrics = fetchedMetrics,
                                 alerts = fetchedAlerts,
                                 pharmacies = fetchedPharmacies,
@@ -187,7 +206,11 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                         }.onSuccess { snapshot ->
                             serverUrl = normalizedUrl
                             applySnapshot(snapshot)
-                            currentDestination = AppDestination.Dashboard
+                            currentDestination = if (snapshot.user.role == UserRole.PHARMACIST) {
+                                AppDestination.Alerts
+                            } else {
+                                AppDestination.Dashboard
+                            }
                             isLoggedIn = true
                             screenMessage = null
                         }.onFailure { error ->
@@ -207,6 +230,7 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                 AppTopBar(
                     title = selectedAlert?.let { "Інцидент" } ?: currentDestination.title,
                     onBack = if (selectedAlert != null) ({ selectedAlertId = null }) else null,
+                    user = currentUser,
                     isRefreshing = isLoading,
                     onRefresh = if (selectedAlert == null && authToken != null) ({
                         val token = authToken ?: return@AppTopBar
@@ -215,9 +239,22 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                         scope.launch {
                             val repository = BackendPharmaSmartRepository(serverUrl)
                             runCatching {
+                                val user = currentUser ?: repository.getCurrentUser(token)
                                 RemoteSnapshot(
                                     token = token,
-                                    metrics = repository.getDashboardMetrics(token),
+                                    user = user,
+                                    metrics = if (user.role == UserRole.PHARMACIST) {
+                                        DashboardMetrics(
+                                            activeAlerts = alerts.size,
+                                            onlinePharmacies = 0,
+                                            totalPharmacies = 0,
+                                            totalSalesOrders = 0,
+                                            totalStaff = 0,
+                                            revenueToday = "—",
+                                        )
+                                    } else {
+                                        repository.getDashboardMetrics(token)
+                                    },
                                     alerts = repository.getAlerts(token),
                                     pharmacies = repository.getPharmacies(token),
                                 )
@@ -239,6 +276,7 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                 if (selectedAlert == null) {
                     AppBottomBar(
                         currentDestination = currentDestination,
+                        userRole = currentUser?.role ?: UserRole.MANAGER,
                         onSelect = { currentDestination = it },
                     )
                 }
@@ -252,13 +290,33 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                 when {
                     selectedAlert != null -> AlertDetailsScreen(
                         alert = selectedAlert,
+                        userRole = currentUser?.role,
+                        onResolve = if (authToken != null && currentUser?.role != UserRole.PHARMACIST) ({
+                            val token = authToken ?: return@AlertDetailsScreen
+                            isLoading = true
+                            scope.launch {
+                                val repository = BackendPharmaSmartRepository(serverUrl)
+                                runCatching {
+                                    repository.resolveAlert(token, selectedAlert.id)
+                                    repository.getAlerts(token)
+                                }.onSuccess { fetchedAlerts ->
+                                    alerts = fetchedAlerts
+                                    selectedAlertId = null
+                                    screenMessage = "Інцидент успішно закрито."
+                                }.onFailure { error ->
+                                    screenMessage = repository.toUserMessage(error)
+                                }
+                                isLoading = false
+                            }
+                        }) else null,
                         modifier = Modifier.fillMaxSize(),
                     )
 
-                    currentDestination == AppDestination.Dashboard -> DashboardScreen(
+                    currentDestination == AppDestination.Dashboard && currentUser?.role != UserRole.PHARMACIST -> DashboardScreen(
                         metrics = metrics,
                         topAlerts = alerts.take(3),
                         message = screenMessage,
+                        user = currentUser,
                         onAlertClick = { selectedAlertId = it.id },
                         modifier = Modifier.fillMaxSize(),
                     )
@@ -266,6 +324,7 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                     currentDestination == AppDestination.Alerts -> AlertsScreen(
                         alerts = alerts,
                         message = screenMessage,
+                        user = currentUser,
                         onAlertClick = { selectedAlertId = it.id },
                         modifier = Modifier.fillMaxSize(),
                     )
@@ -273,6 +332,7 @@ fun PharmaSmartApp(modifier: Modifier = Modifier) {
                     currentDestination == AppDestination.Pharmacies -> PharmaciesScreen(
                         pharmacies = pharmacies,
                         message = screenMessage,
+                        user = currentUser,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -428,17 +488,27 @@ private fun BrandHeader() {
 private fun AppTopBar(
     title: String,
     onBack: (() -> Unit)?,
+    user: UserProfile?,
     isRefreshing: Boolean,
     onRefresh: (() -> Unit)?,
     onLogout: () -> Unit,
 ) {
     TopAppBar(
         title = {
-            Text(
-                text = title,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Column {
+                Text(
+                    text = title,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (user != null) {
+                    Text(
+                        text = "${user.fullName} • ${user.role.displayName()}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         },
         navigationIcon = {
             if (onBack != null) {
@@ -476,10 +546,16 @@ private fun AppTopBar(
 @Composable
 private fun AppBottomBar(
     currentDestination: AppDestination,
+    userRole: UserRole,
     onSelect: (AppDestination) -> Unit,
 ) {
+    val destinations = if (userRole == UserRole.PHARMACIST) {
+        listOf(AppDestination.Alerts, AppDestination.Pharmacies)
+    } else {
+        AppDestination.entries.toList()
+    }
     NavigationBar {
-        AppDestination.entries.forEach { destination ->
+        destinations.forEach { destination ->
             NavigationBarItem(
                 selected = destination == currentDestination,
                 onClick = { onSelect(destination) },
@@ -508,6 +584,7 @@ private fun DashboardScreen(
     metrics: DashboardMetrics,
     topAlerts: List<PharmacyAlert>,
     message: String?,
+    user: UserProfile?,
     onAlertClick: (PharmacyAlert) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -520,7 +597,7 @@ private fun DashboardScreen(
         item {
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "Мережа під контролем",
+                text = if (user?.role == UserRole.ADMIN) "Мережа під контролем" else "Оперативна зведенка",
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
             )
@@ -637,6 +714,7 @@ private fun MetricCard(
 private fun AlertsScreen(
     alerts: List<PharmacyAlert>,
     message: String?,
+    user: UserProfile?,
     onAlertClick: (PharmacyAlert) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -659,7 +737,11 @@ private fun AlertsScreen(
             Spacer(modifier = Modifier.height(8.dp))
             SectionTitle(
                 title = "Моніторинг інцидентів",
-                subtitle = "Список актуальних відхилень температури та вологості в місцях зберігання.",
+                subtitle = if (user?.role == UserRole.PHARMACIST) {
+                    "Інциденти, що стосуються вашої аптеки."
+                } else {
+                    "Список актуальних відхилень температури та вологості в місцях зберігання."
+                },
             )
         }
         item {
@@ -772,6 +854,8 @@ private fun AlertCard(
 @Composable
 private fun AlertDetailsScreen(
     alert: PharmacyAlert,
+    userRole: UserRole?,
+    onResolve: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -818,23 +902,29 @@ private fun AlertDetailsScreen(
             )
         }
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Button(
-                    onClick = {},
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(16.dp),
+            if (userRole == UserRole.PHARMACIST) {
+                InlineMessage(
+                    message = "Фармацевт може переглядати інцидент та передавати інформацію завідувачу або адміністратору.",
+                )
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Text("Взяти в роботу")
-                }
-                OutlinedButton(
-                    onClick = {},
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(16.dp),
-                ) {
-                    Text("Ескалувати")
+                    Button(
+                        onClick = { onResolve?.invoke() },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(16.dp),
+                    ) {
+                        Text("Закрити інцидент")
+                    }
+                    OutlinedButton(
+                        onClick = {},
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(16.dp),
+                    ) {
+                        Text("Ескалувати")
+                    }
                 }
             }
         }
@@ -877,6 +967,7 @@ private fun DetailCard(
 private fun PharmaciesScreen(
     pharmacies: List<PharmacySummary>,
     message: String?,
+    user: UserProfile?,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -889,7 +980,11 @@ private fun PharmaciesScreen(
             Spacer(modifier = Modifier.height(8.dp))
             SectionTitle(
                 title = "Аптечна мережа",
-                subtitle = "Зведена інформація щодо об'єктів, сенсорів і ризиків по кожній аптеці.",
+                subtitle = if (user?.role == UserRole.PHARMACIST) {
+                    "Інформація щодо аптеки, до якої прив'язаний користувач."
+                } else {
+                    "Зведена інформація щодо об'єктів, сенсорів і ризиків по кожній аптеці."
+                },
             )
         }
         if (message != null) {
@@ -1052,4 +1147,10 @@ private fun EmptyStateCard(
             )
         }
     }
+}
+
+private fun UserRole.displayName(): String = when (this) {
+    UserRole.ADMIN -> "Адміністратор"
+    UserRole.MANAGER -> "Завідувач"
+    UserRole.PHARMACIST -> "Фармацевт"
 }
